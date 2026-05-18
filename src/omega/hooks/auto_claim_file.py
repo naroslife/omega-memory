@@ -46,7 +46,7 @@ def main():
         return
 
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         result = mgr.claim_file(session_id, file_path, task="auto-claimed on edit")
         if result.get("conflict"):

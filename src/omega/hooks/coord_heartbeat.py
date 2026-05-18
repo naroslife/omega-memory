@@ -29,7 +29,7 @@ def main():
         return
 
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         mgr.heartbeat(session_id)
     except ImportError:

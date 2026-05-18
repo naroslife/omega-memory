@@ -353,7 +353,7 @@ def preload_embedding_model() -> bool:
     """
     # Try daemon first -- if it's running, no need to load in-process
     try:
-        from omega.embedding_client import get_client
+        from omega_platform.embedding_client import get_client
 
         client = get_client()
         if client is not None:
@@ -450,7 +450,7 @@ def generate_embedding(text: str, dimension: int = 384) -> List[float]:
 
     # Try shared embedding daemon first (avoids per-process model loading)
     try:
-        from omega.embedding_client import get_client
+        from omega_platform.embedding_client import get_client
 
         client = get_client()
         if client is not None:
@@ -507,7 +507,7 @@ def generate_embeddings_batch(texts: List[str]) -> List[List[float]]:
 
     # Try shared embedding daemon first
     try:
-        from omega.embedding_client import get_client
+        from omega_platform.embedding_client import get_client
 
         client = get_client()
         if client is not None:

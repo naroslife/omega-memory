@@ -68,7 +68,7 @@ def main():
             return
 
         # Single-agent fast path
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
 
         mgr = get_manager()
         if mgr.active_session_count() <= 1:

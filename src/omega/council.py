@@ -89,7 +89,7 @@ class Council:
 
     def _get_tool_failures(self, project: str | None) -> list:
         try:
-            from omega.coordination import get_manager
+            from omega_platform.orchestrator.coordination import get_manager
 
             mgr = get_manager()
             with mgr._lock:
@@ -133,7 +133,7 @@ class Council:
 
     def _get_external_actions(self, project: str | None) -> list:
         try:
-            from omega.coordination import get_manager
+            from omega_platform.orchestrator.coordination import get_manager
 
             mgr = get_manager()
             with mgr._lock:
@@ -156,7 +156,7 @@ class Council:
 
     def _get_tool_usage(self) -> list:
         try:
-            from omega.coordination import get_manager
+            from omega_platform.orchestrator.coordination import get_manager
 
             mgr = get_manager()
             with mgr._lock:

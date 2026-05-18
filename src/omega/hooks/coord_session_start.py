@@ -30,7 +30,7 @@ def _kill_orphaned_mcp_servers():
     instead of pgrep, making it faster and more reliable.
     """
     try:
-        from omega.server.pid_registry import kill_orphaned_servers
+        from omega_platform.server.pid_registry import kill_orphaned_servers
         killed = kill_orphaned_servers()
         if killed > 0:
             _log_hook_error("orphan_cleanup", f"Killed {killed} orphaned MCP server(s)")
@@ -72,7 +72,7 @@ def main():
     _kill_orphaned_mcp_servers()
 
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         mgr.list_sessions()  # Force-clean stale sessions (bypasses rate limit)
         result = mgr.register_session(

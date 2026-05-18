@@ -88,7 +88,7 @@ class BehavioralAnalyzer:
         if self._conn is not None:
             return self._conn
         try:
-            from omega.coordination import get_manager
+            from omega_platform.orchestrator.coordination import get_manager
             mgr = get_manager()
             return mgr.get_read_connection()
         except ImportError:

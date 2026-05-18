@@ -998,8 +998,8 @@ def _schedule_entity_extraction(
 
     def _run():
         try:
-            from omega.entity.extraction import extract_entities, resolve_and_link
-            from omega.entity.engine import get_entity_manager
+            from omega_platform.entity.extraction import extract_entities, resolve_and_link
+            from omega_platform.entity.engine import get_entity_manager
             from pathlib import Path as _Path
 
             extraction = extract_entities(content, event_type)
@@ -1043,7 +1043,7 @@ def auto_capture(
     # Auto-resolve entity_id from project if not explicitly provided
     if not entity_id and project:
         try:
-            from omega.entity.engine import resolve_project_entity
+            from omega_platform.entity.engine import resolve_project_entity
             entity_id = resolve_project_entity(project)
         except Exception as e:
             logger.debug("Entity resolution failed: %s", e)
@@ -1294,7 +1294,7 @@ def auto_capture(
         "user_preference", "decision", "lesson_learned", "error_pattern"
     ):
         try:
-            from omega.conflicts import detect_conflicts
+            from omega_platform.orchestrator.conflicts import detect_conflicts
 
             _conflict_results = detect_conflicts(
                 content, event_type, _similar_results[:5],
@@ -2191,7 +2191,7 @@ def welcome(session_id: Optional[str] = None, project: Optional[str] = None) -> 
         _entity_id = None
         if project:
             try:
-                from omega.entity.engine import resolve_project_entity
+                from omega_platform.entity.engine import resolve_project_entity
                 _entity_id = resolve_project_entity(project)
             except Exception as e:
                 logger.debug("Welcome entity resolution failed: %s", e)
@@ -2332,7 +2332,7 @@ def welcome(session_id: Optional[str] = None, project: Optional[str] = None) -> 
     _entity_id = None
     if project:
         try:
-            from omega.entity.engine import resolve_project_entity
+            from omega_platform.entity.engine import resolve_project_entity
             _entity_id = resolve_project_entity(project)
         except Exception:
             pass
@@ -2353,7 +2353,7 @@ def welcome(session_id: Optional[str] = None, project: Optional[str] = None) -> 
 
         # Surface active coordination decisions for this project
         try:
-            from omega.coordination import get_manager
+            from omega_platform.orchestrator.coordination import get_manager
             cm = get_manager()
             coord_decs = cm.query_decisions(project=project, status="active", limit=5)
             if coord_decs:
@@ -3042,7 +3042,7 @@ def distill_trajectory(session_id: str) -> Optional[str]:
         # Gather tool sequence from coord_audit if available
         tool_sequence = ""
         try:
-            from omega.coordination import get_manager
+            from omega_platform.orchestrator.coordination import get_manager
             mgr = get_manager()
             if mgr:
                 audit_rows = mgr._conn.execute(
@@ -4616,7 +4616,7 @@ def diagnostic_report(days: int = 30) -> Dict[str, Any]:
     # --- 2. Tool Usage (from coord_audit) -----------------------------------
     tool_usage: Dict[str, Any] = {"top_tools": [], "omega_tools": [], "total_calls": 0, "omega_calls": 0}
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         if mgr:
             # Top 20 tools by call count
@@ -4658,7 +4658,7 @@ def diagnostic_report(days: int = 30) -> Dict[str, Any]:
     # --- 3. Session Activity ------------------------------------------------
     sessions: Dict[str, Any] = {"total": 0, "week": 0, "month": 0}
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         if mgr:
             sess_row = mgr._conn.execute(
@@ -4821,7 +4821,7 @@ def get_activity_summary(days: int = 7) -> Dict[str, Any]:
 
     # Coordination data (sessions, tasks, claims)
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
 
         mgr = get_manager()
 

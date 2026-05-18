@@ -110,7 +110,7 @@ def main():
         # Try to suggest the agent's own claimed files
         if session_id:
             try:
-                from omega.coordination import get_manager
+                from omega_platform.orchestrator.coordination import get_manager
                 mgr = get_manager()
                 own_claims = mgr.get_session_claims(session_id)
                 own_files = own_claims.get("file_claims", [])
@@ -143,7 +143,7 @@ def main():
         return  # No session tracking, can't check claims
 
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
 
         own_claims = mgr.get_session_claims(session_id)

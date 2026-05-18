@@ -33,7 +33,7 @@ def main():
         return
 
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         tool_output = os.environ.get("TOOL_OUTPUT", "")
         tool_input = os.environ.get("TOOL_INPUT", "")

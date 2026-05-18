@@ -134,7 +134,7 @@ def main():
 
     # --- Peer coordination check ---
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
 
         mgr = get_manager()
         sessions = mgr.list_sessions(auto_clean=True)

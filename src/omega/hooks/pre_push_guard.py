@@ -115,7 +115,7 @@ def _check_push_divergence(command):
 
         # Log divergence event BEFORE exit (fix: was dead code after sys.exit)
         try:
-            from omega.coordination import get_manager
+            from omega_platform.orchestrator.coordination import get_manager
             mgr = get_manager()
             mgr.log_git_event(
                 project=project,
@@ -216,7 +216,7 @@ def _parse_checkout_target(command):
 def _block_if_branch_claimed(session_id, project, branch):
     """Block if the branch is claimed by another agent."""
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         info = mgr.check_branch(project, branch)
 
@@ -280,7 +280,7 @@ def _block_if_directory_occupied(session_id, project, target_branch):
         return  # Same branch or detached HEAD, no contention
 
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
 
         info = mgr.check_branch(project, current_branch)
@@ -320,7 +320,7 @@ def _auto_claim_on_checkout(session_id, project, branch):
     if not session_id or not branch or branch in ("main", "master", "HEAD"):
         return
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         mgr.claim_branch(
             project=project, branch=branch,
@@ -344,7 +344,7 @@ def _auto_claim_branch(command):
         branch = _get_current_branch(project)
         if not branch or branch == "HEAD":
             return
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         mgr.claim_branch(project=project, branch=branch, session_id=session_id, task="pushing to remote")
     except ImportError:
@@ -356,7 +356,7 @@ def _auto_claim_branch(command):
 def _log_push_event(project, branch, session_id):
     """Log a push event to coordination."""
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
 
         result = subprocess.run(

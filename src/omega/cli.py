@@ -140,7 +140,13 @@ def _inject_claude_md(*, dry_run: bool = False):
 def _has_commercial_modules() -> bool:
     """Check if commercial/coordination modules are available."""
     try:
-        import omega.coordination  # noqa: F401
+        import omega_platform.orchestrator.coordination  # noqa: F401
+
+        return True
+    except ImportError:
+        pass
+    try:
+        import omega_platform  # noqa: F401
 
         return True
     except ImportError:
@@ -163,7 +169,7 @@ def _inject_settings_hooks(hooks_src: Path):
     commercial modules are available. Supports both old format (single dict
     per event) and new format (list of dicts per event) in hooks.json manifest.
     """
-    if _has_commercial_modules():
+    if _has_commercial_modules() and (DATA_DIR / "hooks.json").exists():
         hooks_file = "hooks.json"
     else:
         hooks_file = "hooks-core.json"
@@ -570,11 +576,15 @@ def _setup_claude_code(errors_ref: list, hooks_src: Path, hooks_only: bool = Fal
             if result.returncode == 0:
                 print("  MCP server registered successfully")
             else:
-                errors_ref.append(1)
-                print(f"  ERROR: MCP registration returned code {result.returncode}")
-                if result.stderr:
-                    print(f"  {result.stderr.strip()}")
-                print(f"  Register manually: claude mcp add -s user omega-memory -- {python_path} -m omega.server.mcp_server")
+                combined = ((result.stderr or "") + (result.stdout or "")).lower()
+                if "already exists" in combined:
+                    print("  MCP server already registered (no changes needed)")
+                else:
+                    errors_ref.append(1)
+                    print(f"  ERROR: MCP registration returned code {result.returncode}")
+                    if result.stderr:
+                        print(f"  {result.stderr.strip()}")
+                    print(f"  Register manually: claude mcp add -s user omega-memory -- {python_path} -m omega.server.mcp_server")
         except FileNotFoundError:
             errors_ref.append(1)
             print("  ERROR: 'claude' command not found in PATH.")
@@ -1028,6 +1038,25 @@ def cmd_setup(args):
             else:
                 print("  TIP: Run 'omega setup --download-model' to upgrade to bge-small-en-v1.5")
                 steps_done.append("Embedding model (downloaded)")
+
+    # 2b. Download cross-encoder reranker model (idempotent)
+    try:
+        from omega import reranker as _reranker
+
+        info = _reranker.get_reranker_model_info()
+        model_name = info.get("model_name", "cross-encoder")
+        precision = os.environ.get("OMEGA_RERANKER_PRECISION", "int8")
+        size_hint = "~2.3GB" if precision == "fp32" else "~571MB"
+        print(f"  Reranker: {model_name} ({precision}, {size_hint})...")
+        path = _reranker.download_model()
+        if path:
+            print(f"  Reranker model ready at {path}")
+            steps_done.append("Reranker model")
+        else:
+            print("  WARNING: Reranker model download failed; reranking will be disabled until resolved")
+            print("  Retry with: python -c 'from omega.reranker import download_model; download_model()'")
+    except Exception as e:
+        print(f"  WARNING: Reranker setup skipped: {e}")
 
     # 3. Check for existing MAGMA model and symlink
     gnosis_model = Path.home() / ".cache" / "gnosis" / "models" / "all-MiniLM-L6-v2-onnx"
@@ -2231,7 +2260,8 @@ def _jp_restore_config(args):
 def cmd_embed_daemon(args):
     """Manage the shared embedding daemon."""
     try:
-        from omega.embedding_daemon import is_daemon_running, get_daemon_pid, stop_daemon, main as daemon_main
+        from omega_platform.embedding_daemon import is_daemon_running, get_daemon_pid, stop_daemon
+        from omega_platform.embedding_client import _auto_start_daemon
     except ImportError:
         print("Embedding daemon requires omega-pro.")
         sys.exit(1)
@@ -2243,7 +2273,13 @@ def cmd_embed_daemon(args):
             print(f"Embedding daemon already running (PID {pid})")
         else:
             print("Starting embedding daemon...")
-            daemon_main()
+            if _auto_start_daemon():
+                pid = get_daemon_pid()
+                print(f"Embedding daemon started (PID {pid})")
+            else:
+                print("ERROR: Embedding daemon failed to start within timeout")
+                print("Check ~/.omega/embedding_daemon.log for details")
+                sys.exit(1)
     elif subcmd == "stop":
         if stop_daemon():
             print("Embedding daemon stopped")
@@ -2254,7 +2290,7 @@ def cmd_embed_daemon(args):
         if pid:
             print(f"Embedding daemon running (PID {pid})")
             try:
-                from omega.embedding_client import EmbeddingClient
+                from omega_platform.embedding_client import EmbeddingClient
 
                 client = EmbeddingClient()
                 if client._connect():
@@ -2279,7 +2315,11 @@ def cmd_doctor(args):
     from omega.cli_ui import print_header, print_section, print_status_line, print_summary
 
     use_json = _use_json(args)
+    strict = getattr(args, "strict", False)
+    skip_probes = getattr(args, "skip_probes", False)
+    probe_timeout = getattr(args, "probe_timeout", 5.0)
     checks = []
+    probes = []
     errors = 0
     warnings = 0
 
@@ -2299,6 +2339,11 @@ def cmd_doctor(args):
         nonlocal warnings
         warnings += 1
         checks.append({"status": "warn", "message": msg})
+        if not use_json:
+            print_status_line("warn", msg)
+
+    def skip(msg):
+        checks.append({"status": "skip", "message": msg})
         if not use_json:
             print_status_line("warn", msg)
 
@@ -2668,12 +2713,58 @@ def cmd_doctor(args):
     if _doctor_conn:
         _doctor_conn.close()
 
+    # 10. Servers & Probes (functional + liveness, bounded per probe)
+    if not skip_probes:
+        if not use_json:
+            print_section("Servers & Probes")
+        try:
+            from omega import diagnostics
+            from omega.cli_ui import print_status_line as _psl
+
+            functional = [diagnostics.probe_embedding, diagnostics.probe_reranker]
+            liveness = [diagnostics.probe_embed_daemon,
+                        diagnostics.probe_hook_server,
+                        diagnostics.probe_mcp_server]
+
+            for group_name, group in (("Functional", functional), ("Liveness", liveness)):
+                if not use_json:
+                    print(f"  [{group_name}]")
+                for r in diagnostics.run_probes(probe_timeout, group):
+                    probes.append(r)
+                    line = f"{r['name']}: {r['detail']} ({r['latency_ms']:.0f} ms)"
+                    if r["status"] == "ok":
+                        if not use_json:
+                            _psl("ok", line)
+                    elif r["status"] == "warn":
+                        warnings += 1
+                        if not use_json:
+                            _psl("warn", line)
+                    elif r["status"] == "skip":
+                        if not use_json:
+                            _psl("warn", f"{r['name']}: SKIPPED — {r['detail']}")
+                    else:
+                        errors += 1
+                        if not use_json:
+                            _psl("fail", line)
+        except Exception as e:
+            warn(f"Probes runner failed: {e}")
+
     # Summary
+    from omega.diagnostics import compute_exit_code as _compute_exit_code
+    exit_code = _compute_exit_code(errors, warnings, strict)
     if use_json:
-        print(json.dumps({"checks": checks, "errors": errors, "warnings": warnings}, indent=2))
+        print(json.dumps({
+            "checks": checks,
+            "probes": probes,
+            "errors": errors,
+            "warnings": warnings,
+            "strict": strict,
+        }, indent=2))
     else:
         print()
         print_summary(errors, warnings)
+        if strict and warnings > 0:
+            print(f"\n  --strict: {warnings} warning(s) escalated to failure")
 
     # Pro upgrade nudge for free users
     if not use_json:
@@ -2687,13 +2778,13 @@ def cmd_doctor(args):
     if not use_json:
         _offer_email_capture()
 
-    sys.exit(1 if errors > 0 else 0)
+    sys.exit(exit_code)
 
 
 def cmd_knowledge(args):
     """Knowledge base management."""
     try:
-        from omega.knowledge.engine import scan_directory, list_documents, search_documents  # noqa: F401
+        from omega_platform.knowledge.engine import scan_directory, list_documents, search_documents  # noqa: F401
     except ImportError:
         print("Knowledge base requires omega-pro.")
         print("Install: pip install omega-pro")
@@ -2716,7 +2807,7 @@ def cmd_knowledge(args):
 
     elif subcmd == "sync-kb":
         try:
-            from omega.knowledge.cloud_sync import sync_kb_queue
+            from omega_platform.knowledge.cloud_sync import sync_kb_queue
         except ImportError:
             print("Knowledge cloud sync requires omega-pro.")
             return
@@ -2734,7 +2825,7 @@ def cmd_knowledge(args):
 def cmd_cloud(args):
     """Cloud sync and Supabase management."""
     try:
-        from omega.cloud.sync import get_sync  # noqa: F401
+        from omega_platform.cloud.sync import get_sync  # noqa: F401
     except ImportError:
         print("Cloud sync requires omega-pro.")
         print("Install: pip install omega-pro")
@@ -2753,7 +2844,7 @@ def cmd_cloud(args):
             print("\nGet these from: Supabase Dashboard → Settings → API")
             return
         try:
-            from omega.cloud.setup import setup_supabase
+            from omega_platform.cloud.setup import setup_supabase
         except ImportError:
             print("Cloud setup requires omega-pro.")
             return
@@ -2781,7 +2872,7 @@ def cmd_cloud(args):
 
     elif subcmd == "schema":
         try:
-            from omega.cloud.setup import get_schema_sql
+            from omega_platform.cloud.setup import get_schema_sql
         except ImportError:
             print("Cloud setup requires omega-pro.")
             return
@@ -2790,7 +2881,7 @@ def cmd_cloud(args):
 
     elif subcmd == "verify":
         try:
-            from omega.cloud.setup import verify_connection
+            from omega_platform.cloud.setup import verify_connection
         except ImportError:
             print("Cloud verify requires omega-pro.")
             return
@@ -2818,7 +2909,7 @@ def cmd_cloud(args):
 def cmd_mobile(args):
     """Mobile access setup and mcp-proxy management."""
     try:
-        from omega.cloud.sync import get_sync  # noqa: F401
+        from omega_platform.cloud.sync import get_sync  # noqa: F401
     except ImportError:
         print("Mobile access requires omega-pro (cloud sync).")
         print("Install: pip install omega-pro")
@@ -3300,6 +3391,44 @@ def cmd_license(args):
         print("\nRun 'omega activate <key>' to reactivate.")
 
 
+def cmd_export(args):
+    """Export all memories to a JSON file (omega-sqlite-v1 format)."""
+    from omega import bridge
+    from omega.crypto import reset_crypto_state
+
+    filepath = args.file
+    if getattr(args, "no_encrypt", False):
+        prev = os.environ.get("OMEGA_ENCRYPT")
+        os.environ["OMEGA_ENCRYPT"] = "0"
+        reset_crypto_state()
+        try:
+            result = bridge.export_memories(filepath)
+        finally:
+            if prev is None:
+                os.environ.pop("OMEGA_ENCRYPT", None)
+            else:
+                os.environ["OMEGA_ENCRYPT"] = prev
+            reset_crypto_state()
+    else:
+        result = bridge.export_memories(filepath)
+
+    if _use_json(args):
+        print(json.dumps(result, default=str))
+    else:
+        print(result)
+
+
+def cmd_import(args):
+    """Import memories from a JSON file. Use --merge for non-destructive import."""
+    from omega import bridge
+
+    result = bridge.import_memories(args.file, clear_existing=not args.merge)
+    if _use_json(args):
+        print(json.dumps(result, default=str))
+    else:
+        print(result)
+
+
 def cmd_export_obsidian(args):
     """Export memories as Obsidian-compatible markdown files."""
     from omega.obsidian_export import export_to_obsidian
@@ -3424,6 +3553,9 @@ def main():
     doctor_parser = subparsers.add_parser("doctor", help="Verify installation: import, model, database")
     doctor_parser.add_argument("--client", choices=["claude-code", "claude-desktop", "cursor", "windsurf", "cline", "codex", "antigravity", "venv"], help="Include client-specific checks (MCP, hooks)")
     doctor_parser.add_argument("--json", action="store_true", help="Output as JSON (also: OMEGA_JSON=1)")
+    doctor_parser.add_argument("--strict", action="store_true", help="Treat warnings as failures (affects exit code only)")
+    doctor_parser.add_argument("--probe-timeout", type=float, default=5.0, metavar="SECONDS", help="Hard timeout per server/embedding probe (default: 5.0)")
+    doctor_parser.add_argument("--skip-probes", action="store_true", help="Skip the Servers & Probes section (faster)")
 
     subparsers.add_parser("migrate", help="Copy MAGMA data to OMEGA (non-destructive)")
     migrate_db_parser = subparsers.add_parser("migrate-db", help="Migrate JSON graphs to SQLite backend")
@@ -3555,6 +3687,19 @@ def main():
     mobile_serve_parser.add_argument("--port", type=int, default=8089, help="HTTP port (default: 8089)")
     mobile_serve_parser.add_argument("--host", default="127.0.0.1", help="Bind address (default: 127.0.0.1)")
 
+    # --- JSON export / import (non-destructive merge supported) ---
+    export_parser = subparsers.add_parser("export", help="Export all memories to a JSON file")
+    export_parser.add_argument("file", help="Output JSON file path")
+    export_parser.add_argument("--no-encrypt", action="store_true",
+                               help="Force plain JSON even if OMEGA_ENCRYPT is set")
+    export_parser.add_argument("--json", action="store_true", help="Print result summary as JSON")
+
+    import_parser = subparsers.add_parser("import", help="Import memories from a JSON file")
+    import_parser.add_argument("file", help="Input JSON file path")
+    import_parser.add_argument("--merge", action="store_true",
+                               help="Non-destructive: keep existing memories and dedup-merge incoming ones (default: clear+restore)")
+    import_parser.add_argument("--json", action="store_true", help="Print result summary as JSON")
+
     # --- Obsidian export ---
     obsidian_parser = subparsers.add_parser("export-obsidian", help="Export memories as Obsidian-compatible markdown files")
     obsidian_parser.add_argument("--output-dir", default="./omega-vault", help="Root directory for exported vault (default: ./omega-vault)")
@@ -3604,6 +3749,8 @@ def main():
         "cloud": cmd_cloud,
         "mobile": cmd_mobile,
         "eval-retrieval": cmd_eval_retrieval,
+        "export": cmd_export,
+        "import": cmd_import,
         "export-obsidian": cmd_export_obsidian,
     }
 

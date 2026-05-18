@@ -11,5 +11,9 @@
   ],
   "PostToolUse": [
     {"script": "fast_hook.py surface_memories", "timeout": 5000, "matcher": "Edit|Write|NotebookEdit|Bash|Read"}
+  ],
+  "PreToolUse": [
+    {"script": "fast_hook.py pre_push_guard", "timeout": 15000, "matcher": "Bash"},
+    {"script": "fast_hook.py pre_file_guard", "timeout": 5000, "matcher": "Edit|Write|NotebookEdit"}
   ]
 }

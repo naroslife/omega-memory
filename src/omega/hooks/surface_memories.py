@@ -145,7 +145,7 @@ def _lookup_session_tasks(results: list) -> dict:
     if not session_ids:
         return {}
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         placeholders = ",".join("?" for _ in session_ids)
         cursor = mgr._conn.execute(
@@ -506,7 +506,7 @@ def _track_git_commit(tool_input: str, tool_output: str, session_id: str, projec
         branch = None
 
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         mgr.log_git_event(
             project=project,

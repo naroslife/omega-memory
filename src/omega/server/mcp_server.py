@@ -52,7 +52,7 @@ HANDLERS = dict(_CORE_HANDLERS)
 # These require a Pro license. In the open-core distribution, they are gated
 # behind license.is_pro(). Try each in turn; missing modules are fine.
 _BUILTIN_MODULES = [
-    ("omega.server.coord_schemas", "COORD_TOOL_SCHEMAS", "omega.server.coord_handlers", "COORD_HANDLERS"),
+    ("omega_platform.server.coord_schemas", "COORD_TOOL_SCHEMAS", "omega.server.coord_handlers", "COORD_HANDLERS"),
     ("omega.router.tool_schemas", "ROUTER_TOOL_SCHEMAS", "omega.router.handlers", "ROUTER_HANDLERS"),
     ("omega.profile.tool_schemas", "PROFILE_TOOL_SCHEMAS", "omega.profile.handlers", "PROFILE_HANDLERS"),
     ("omega.knowledge.tool_schemas", "KNOWLEDGE_TOOL_SCHEMAS", "omega.knowledge.handlers", "KNOWLEDGE_HANDLERS"),
@@ -167,12 +167,12 @@ def _close_on_exit():
         pass
     # Close CoordinationManager (omega.db connection)
     try:
-        from omega.coordination import close_manager
+        from omega_platform.orchestrator.coordination import close_manager
         close_manager()
     except Exception:
         pass
     try:
-        from omega.server.pid_registry import unregister_pid
+        from omega_platform.server.pid_registry import unregister_pid
         unregister_pid()
     except Exception:
         pass
@@ -386,7 +386,7 @@ async def call_tool(name: str, arguments: dict) -> list[TextContent]:
         error_msg = str(e)
         if "database is locked" in error_msg:
             try:
-                from omega.server.pid_registry import format_lock_diagnostic
+                from omega_platform.server.pid_registry import format_lock_diagnostic
                 diag = format_lock_diagnostic()
                 error_msg = (
                     f"Database locked. {diag}. "
@@ -450,9 +450,9 @@ async def _socket_watchdog():
         return  # TCP server doesn't need file watchdog
 
     try:
-        from omega.server.hook_server import SOCK_PATH, start_hook_server
+        from omega_platform.server.hook_server import SOCK_PATH, start_hook_server
     except ImportError:
-        logger.debug("hook_server not available, socket watchdog disabled")
+        logger.warning("hook_server not available, socket watchdog disabled")
         return
 
     while True:
@@ -487,8 +487,8 @@ def _run_coordination_tick():
     global _coord_tick_count
     _coord_tick_count += 1
     try:
-        from omega.coordination import get_manager
-        from omega.server.hook_server import (
+        from omega_platform.orchestrator.coordination import get_manager
+        from omega_platform.server.hook_server import (
             _last_deadlock_push,
             DEADLOCK_PUSH_DEBOUNCE_S,
             _agent_nickname,
@@ -512,7 +512,7 @@ def _run_coordination_tick():
         if _coord_tick_count % 5 == 0:
             # Prune stale debounce entries (>1h old) to prevent unbounded growth
             try:
-                from omega.server.hook_server import _debounce_state
+                from omega_platform.server.hook_server import _debounce_state
                 evicted = _debounce_state.prune_stale(3600)
                 if evicted:
                     logger.debug("Pruned %d stale debounce entries", evicted)
@@ -596,7 +596,7 @@ def _cleanup_dead_sessions():
     Uses a short busy_timeout and skips gracefully if the DB is locked.
     """
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         conn = mgr.get_read_connection()
 
@@ -918,7 +918,7 @@ async def _run_http_transport(hook_srv) -> None:
     import contextlib
 
     try:
-        from omega.server.hook_server import stop_hook_server as _stop_hook_srv
+        from omega_platform.server.hook_server import stop_hook_server as _stop_hook_srv
     except ImportError:
         async def _stop_hook_srv(*args, **kwargs):
             pass
@@ -1009,7 +1009,7 @@ async def main():
     # Skip in HTTP daemon mode — daemon runs under launchd with ppid=1 by design.
     if _TRANSPORT != "http":
         try:
-            from omega.server.pid_registry import kill_orphaned_servers
+            from omega_platform.server.pid_registry import kill_orphaned_servers
             killed = kill_orphaned_servers()
             if killed:
                 logger.warning("Killed %d orphaned MCP server(s) at startup", killed)
@@ -1024,7 +1024,7 @@ async def main():
 
     # Register this process for lock diagnostics
     try:
-        from omega.server.pid_registry import register_pid
+        from omega_platform.server.pid_registry import register_pid
         register_pid(
             transport=_TRANSPORT,
             port=_HTTP_PORT if _TRANSPORT == "http" else None,
@@ -1034,7 +1034,7 @@ async def main():
 
     # Start UDS hook server for fast hook dispatch
     try:
-        from omega.server.hook_server import start_hook_server, stop_hook_server
+        from omega_platform.server.hook_server import start_hook_server, stop_hook_server
     except ImportError:
         async def start_hook_server(*args, **kwargs):
             return None
@@ -1049,7 +1049,7 @@ async def main():
         # Try daemon with retries (daemon may be busy handling another MCP server)
         for _attempt in range(3):
             try:
-                from omega.embedding_client import get_client
+                from omega_platform.embedding_client import get_client
 
                 client = get_client()
                 if client is not None:

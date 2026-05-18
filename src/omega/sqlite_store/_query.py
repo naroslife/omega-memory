@@ -952,7 +952,7 @@ class QueryMixin:
             return
 
         try:
-            from omega.entity.engine import EntityManager
+            from omega_platform.entity.engine import EntityManager
             mgr = EntityManager(db_path=self.db_path)
             related_ids = mgr.get_related_entity_ids(entity_id, max_hops=1)
             if not related_ids:
@@ -1346,7 +1346,7 @@ class QueryMixin:
         cluster list from get_clusters_for_retrieval (avoids a second DB fetch).
         """
         try:
-            from omega.pattern_learner import PatternLearner
+            from omega_platform.pattern_learner import PatternLearner
             learner = PatternLearner(store=self)
             clusters = learner.get_clusters_for_retrieval()
         except Exception as e:
@@ -1672,7 +1672,7 @@ class QueryMixin:
         Returns 1.0 (neutral) if Thompson module unavailable or insufficient data.
         """
         try:
-            from omega.thompson import ThompsonBandit
+            from omega_platform.thompson import ThompsonBandit
             bandit = ThompsonBandit(store=self)
             arm_id = f"event_type:{event_type}" if event_type else "event_type:unknown"
             return bandit.get_boost_factor(arm_id)

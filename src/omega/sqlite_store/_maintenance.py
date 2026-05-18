@@ -477,7 +477,7 @@ class MaintenanceMixin:
         """
         stats: Dict[str, int] = {"merged": 0}
         try:
-            from omega.entity.engine import get_entity_manager
+            from omega_platform.entity.engine import get_entity_manager
             em = get_entity_manager(Path(self.db_path) if hasattr(self, 'db_path') else None)
         except Exception as e:
             logger.debug("Entity engine unavailable for merge: %s", e)
@@ -895,7 +895,7 @@ class MaintenanceMixin:
 
         # Update Thompson arms outside lock (non-critical)
         try:
-            from omega.thompson import ThompsonBandit
+            from omega_platform.thompson import ThompsonBandit
             bandit = ThompsonBandit(store=self)
             et = meta.get("event_type", "") or ""
             arm_id = f"event_type:{et}" if et else "event_type:unknown"

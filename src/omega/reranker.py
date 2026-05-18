@@ -5,9 +5,9 @@ Provides:
 - cross_encoder_score(query, passages) → list of relevance scores (or None)
 - Lazy model loading with circuit breaker (3 attempts, 5-min cooldown)
 - Env-var disable: OMEGA_CROSS_ENCODER=0
-- Precision selection: OMEGA_RERANKER_PRECISION=fp32|int8 (default: fp32)
-  fp32: full precision, ~2.3 GB on disk, ~2.5 GB RSS
+- Precision selection: OMEGA_RERANKER_PRECISION=fp32|int8 (default: int8)
   int8: quantized, ~571 MB on disk, ~650 MB RSS
+  fp32: full precision, ~2.3 GB on disk, ~2.5 GB RSS
 
 Uses cross-encoder/ms-marco-MiniLM-L-6-v2 via ONNX Runtime.
 Mirrors the loading patterns from omega.embedding.
@@ -49,7 +49,7 @@ _RERANKER_MODEL = None  # Tuple of (tokenizer, session) when loaded
 _AVAILABLE_MODELS = {
     "bge-reranker-v2-m3": {
         "repo_id": "onnx-community/bge-reranker-v2-m3-ONNX",
-        "default_precision": "fp32",
+        "default_precision": "int8",
         "precisions": {
             "fp32": {
                 "dir": "~/.cache/omega/models/bge-reranker-v2-m3-onnx",
@@ -235,7 +235,7 @@ def download_model(
         target_dir: Directory to download into. Defaults to model-specific dir.
         model_name: Model name from _AVAILABLE_MODELS. Defaults to current selection.
         precision: "fp32" (~2.3 GB) or "int8" (~571 MB). Defaults to
-            OMEGA_RERANKER_PRECISION env var, then "fp32".
+            OMEGA_RERANKER_PRECISION env var, then "int8".
 
     Returns:
         Path to the model directory, or None on failure.

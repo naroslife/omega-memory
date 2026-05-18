@@ -53,7 +53,7 @@ def main():
         if not session_id:
             return
 
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
 
         mgr = get_manager()
         count = mgr.active_session_count()

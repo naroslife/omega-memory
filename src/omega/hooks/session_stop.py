@@ -578,7 +578,7 @@ def main():
     # Cloud push fallback — when the hook_server is down (OOM), this fast_hook
     # path is the only session_stop that fires. Push to cloud here too.
     try:
-        from omega.cloud.sync import get_sync
+        from omega_platform.cloud.sync import get_sync
         get_sync().sync_all()
         push_marker = Path.home() / ".omega" / "last-cloud-push"
         push_marker.write_text(datetime.now(timezone.utc).isoformat())

@@ -211,7 +211,7 @@ def main():
         return
 
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         project = os.environ.get("PROJECT_DIR", "")
         if project:
@@ -272,7 +272,7 @@ def main():
                     links = _build_entity_links(claim_list, proj_name)
                     for link in links:
                         try:
-                            from omega.entity.engine import EntityEngine
+                            from omega_platform.entity.engine import EntityEngine
                             ee = EntityEngine()
                             ee.add_relationship(link["from"], link["to"], link["relationship"])
                         except Exception:

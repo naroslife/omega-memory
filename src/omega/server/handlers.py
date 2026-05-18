@@ -281,7 +281,7 @@ def _validate_memory_write(content: str, event_type: str, metadata: Any) -> tupl
 def _broadcast_decision(session_id: str, project: str, content: str):
     """Best-effort broadcast of a stored decision to active peers."""
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
 
         # Only broadcast if there are active peers
@@ -465,7 +465,7 @@ async def handle_omega_store(arguments: dict) -> dict:
         # Auto-register decisions in coordination (Part C of utilization boost)
         if event_type == "decision" and session_id:
             try:
-                from omega.coordination import get_manager
+                from omega_platform.orchestrator.coordination import get_manager
                 mgr = get_manager()
                 _auto_register_decision(mgr, session_id, project, content, entity_id)
             except Exception:
@@ -475,7 +475,7 @@ async def handle_omega_store(arguments: dict) -> dict:
         if event_type == "decision" and content:
             try:
                 from omega.bridge import query_structured
-                from omega.server.hook_server.cards import format_decision_trail_card
+                from omega_platform.server.hook_server.cards import format_decision_trail_card
 
                 prior = query_structured(
                     query_text=content[:200],
@@ -515,7 +515,7 @@ async def handle_omega_store(arguments: dict) -> dict:
         # Attach finding to active intent ("already explored" signal)
         if event_type in ("decision", "lesson_learned") and session_id:
             try:
-                from omega.coordination import get_manager
+                from omega_platform.orchestrator.coordination import get_manager
                 mgr = get_manager()
                 mgr.attach_finding(session_id, content[:300])
             except Exception as e:
@@ -622,7 +622,7 @@ async def handle_omega_query(arguments: dict) -> dict:
             results.append({"source": "memory", "error": str(e)})
         # Knowledge document search
         try:
-            from omega.knowledge.engine import search_documents
+            from omega_platform.knowledge.engine import search_documents
             doc_result = search_documents(query=query_text, limit=limit, entity_id=entity_id)
             results.append({"source": "document", "data": doc_result})
         except ImportError:
@@ -788,7 +788,7 @@ async def handle_omega_trace(arguments: dict) -> dict:
         return mcp_error("session_id is required for trace mode")
 
     try:
-        from omega.coordination import CoordinationManager
+        from omega_platform.orchestrator.coordination import CoordinationManager
 
         mgr = CoordinationManager.get_instance()
         rows = mgr.query_audit(session_id=session_id, limit=500)
@@ -880,7 +880,7 @@ async def handle_omega_welcome(arguments: dict) -> dict:
     project = arguments.get("project")
 
     try:
-        from omega.server.hook_server import mark_protocol_call
+        from omega_platform.server.hook_server import mark_protocol_call
         mark_protocol_call(session_id, "omega_welcome")
     except Exception as e:
         logger.debug("mark_protocol_call (welcome) failed: %s", e)
@@ -897,7 +897,7 @@ async def handle_omega_welcome(arguments: dict) -> dict:
     # timeout, correct PID).  The coord_session_start hook often times out
     # under SQLite contention with many concurrent agents.
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         import os as _os
 
         mgr = get_manager()
@@ -1904,7 +1904,7 @@ async def handle_omega_protocol(arguments: dict) -> dict:
     project = arguments.get("project")
 
     try:
-        from omega.server.hook_server import mark_protocol_call
+        from omega_platform.server.hook_server import mark_protocol_call
         session_id_for_mark = arguments.get("session_id") or os.environ.get("SESSION_ID", "")
         mark_protocol_call(session_id_for_mark, "omega_protocol")
     except Exception as e:
@@ -1913,7 +1913,7 @@ async def handle_omega_protocol(arguments: dict) -> dict:
     # Special section: gate_status returns protocol gate diagnostic info
     if section == "gate_status":
         try:
-            from omega.server.hook_server import (
+            from omega_platform.server.hook_server import (
                 _gate_call_count,
                 _heartbeat_count,
                 _protocol_calls,
@@ -1944,7 +1944,7 @@ async def handle_omega_protocol(arguments: dict) -> dict:
     # Detect peer count for auto-mode selection
     peer_count = 0
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
 
         mgr = get_manager()
         sessions = mgr.list_sessions(auto_clean=True)
@@ -1954,7 +1954,7 @@ async def handle_omega_protocol(arguments: dict) -> dict:
         logger.debug("Coordination session list failed: %s", e)
 
     try:
-        from omega.protocol import get_protocol
+        from omega_platform.protocol import get_protocol
 
         result = get_protocol(
             section=section,
@@ -2030,7 +2030,7 @@ async def handle_omega_briefing(arguments: dict) -> dict:
 
     # 2. Protocol (solo mode — Desktop is always solo)
     try:
-        from omega.protocol import get_protocol
+        from omega_platform.protocol import get_protocol
 
         result = get_protocol(
             section="solo",
@@ -2474,7 +2474,7 @@ async def handle_omega_stats(arguments: dict) -> dict:
 
             all_tools = {t["name"] for t in TOOL_SCHEMAS}
             try:
-                from omega.server.coord_schemas import COORD_TOOL_SCHEMAS
+                from omega_platform.server.coord_schemas import COORD_TOOL_SCHEMAS
 
                 all_tools |= {t["name"] for t in COORD_TOOL_SCHEMAS}
             except ImportError:

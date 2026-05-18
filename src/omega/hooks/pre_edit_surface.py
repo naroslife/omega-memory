@@ -76,7 +76,7 @@ def _check_constraints(file_path, project):
 def _check_claim(file_path, session_id):
     """Check if another agent has claimed this file."""
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         info = mgr.check_file(file_path)
         if info.get("claimed") and info.get("session_id") != session_id:

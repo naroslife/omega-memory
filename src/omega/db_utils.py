@@ -38,7 +38,7 @@ def retry_on_locked(fn, *args, **kwargs):
 def _enrich_and_raise_lock_error(original: Exception) -> None:
     """Re-raise a lock error with active process diagnostic info."""
     try:
-        from omega.server.pid_registry import format_lock_diagnostic
+        from omega_platform.server.pid_registry import format_lock_diagnostic
         diag = format_lock_diagnostic()
     except Exception:
         diag = "Run `ps aux | grep omega` to check for stale processes"

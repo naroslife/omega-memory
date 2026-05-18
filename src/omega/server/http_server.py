@@ -104,7 +104,7 @@ async def run_http(host: str, port: int, api_key: str | None) -> None:
     from omega.server.mcp_server import server, _wire_plugin_retrieval
 
     try:
-        from omega.server.hook_server import start_hook_server
+        from omega_platform.server.hook_server import start_hook_server
         await start_hook_server()
     except ImportError:
         pass

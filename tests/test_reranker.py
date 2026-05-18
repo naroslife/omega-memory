@@ -164,14 +164,14 @@ class TestPrecisionResolution:
     def teardown_method(self):
         os.environ.pop("OMEGA_RERANKER_PRECISION", None)
 
-    def test_default_precision_is_fp32(self):
-        """Without env var, bge-reranker defaults to fp32."""
+    def test_default_precision_is_int8(self):
+        """Without env var, bge-reranker defaults to int8 (quantized)."""
         os.environ.pop("OMEGA_RERANKER_PRECISION", None)
         repo_id, dir_path, files = reranker._resolve_model_config("bge-reranker-v2-m3")
-        assert "bge-reranker-v2-m3-onnx" in dir_path
-        assert "int8" not in dir_path
+        assert "bge-reranker-v2-m3-onnx-int8" in dir_path
         file_names = [remote for remote, _ in files]
-        assert "onnx/model.onnx_data" in file_names
+        assert "onnx/model_quantized.onnx" in file_names
+        assert "onnx/model.onnx_data" not in file_names
 
     def test_int8_precision(self):
         """OMEGA_RERANKER_PRECISION=int8 selects quantized model."""
@@ -183,10 +183,10 @@ class TestPrecisionResolution:
         assert "onnx/model.onnx_data" not in file_names
 
     def test_invalid_precision_falls_back(self):
-        """Unknown precision falls back to default_precision (fp32)."""
+        """Unknown precision falls back to default_precision (int8)."""
         os.environ["OMEGA_RERANKER_PRECISION"] = "fp64"
         repo_id, dir_path, files = reranker._resolve_model_config("bge-reranker-v2-m3")
-        assert "int8" not in dir_path
+        assert "bge-reranker-v2-m3-onnx-int8" in dir_path
 
     def test_precision_ignored_for_msmarco(self):
         """ms-marco has no precision variants; env var is ignored."""
