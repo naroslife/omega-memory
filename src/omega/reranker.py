@@ -8,6 +8,8 @@ Provides:
 - Precision selection: OMEGA_RERANKER_PRECISION=fp32|int8 (default: int8)
   int8: quantized, ~571 MB on disk, ~650 MB RSS
   fp32: full precision, ~2.3 GB on disk, ~2.5 GB RSS
+- Auto-download on first use: OMEGA_RERANKER_AUTODOWNLOAD=1 (default).
+  Set to 0 to require manual download via `python -m omega --download-model`.
 
 Uses cross-encoder/ms-marco-MiniLM-L-6-v2 via ONNX Runtime.
 Mirrors the loading patterns from omega.embedding.
@@ -368,11 +370,33 @@ def _get_reranker_model():
     except Exception:
         return None
 
-    # Find model directory
+    # Find model directory, auto-download if missing
     model_dir = _get_model_dir()
     if model_dir is None:
-        logger.warning("Cross-encoder model not found — run download_model() first")
-        return None
+        if os.environ.get("OMEGA_RERANKER_AUTODOWNLOAD", "1") == "0":
+            logger.warning(
+                "Cross-encoder model not found and OMEGA_RERANKER_AUTODOWNLOAD=0. "
+                "Run `python -m omega --download-model` or call omega.reranker.download_model()."
+            )
+            return None
+        precision = os.environ.get("OMEGA_RERANKER_PRECISION", "fp32")
+        size_hint = "~2.3 GB" if precision == "fp32" else "~571 MB"
+        logger.info(
+            "Cross-encoder model not found, downloading %s (%s, precision=%s). "
+            "Set OMEGA_RERANKER_AUTODOWNLOAD=0 to disable auto-download.",
+            _RERANKER_MODEL_NAME, size_hint, precision,
+        )
+        downloaded = download_model()
+        if downloaded is None:
+            logger.warning(
+                "Cross-encoder auto-download failed. "
+                "Run `python -m omega --download-model` manually to retry."
+            )
+            return None
+        model_dir = _get_model_dir()
+        if model_dir is None:
+            logger.error("Cross-encoder model still not found after download to %s", downloaded)
+            return None
 
     try:
         import onnxruntime as ort

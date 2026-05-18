@@ -3301,7 +3301,7 @@ def cmd_activate(args):
         print("  License activated, but Pro package could not be installed automatically.")
         print("  Download it manually from your dashboard:")
         print()
-        print("    https://omegamax.co/pro/dashboard")
+        print("    https://admin.omegamax.co/pro/dashboard")
         print()
         print("  Then install:")
         print("    pip install ~/Downloads/omega_memory_pro-*.whl")
@@ -3383,7 +3383,7 @@ def cmd_license(args):
         except ImportError:
             pass
         if not pro_installed:
-            print("\nPro wheel not installed. Download from https://omegamax.co/pro/dashboard")
+            print("\nPro wheel not installed. Download from https://admin.omegamax.co/pro/dashboard")
             print("Then: pip install ~/Downloads/omega_memory_pro-*.whl")
     else:
         print("Status:      Expired")

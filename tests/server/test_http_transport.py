@@ -43,10 +43,12 @@ def test_check_port_available_free():
 def test_check_port_available_bound():
     """Bound port should be detected as unavailable."""
     from omega.server.mcp_server import _check_port_available
-    # Bind a port, then check it
+    # Bind + listen on a port so SO_REUSEADDR in _check_port_available cannot rebind.
+    # On Linux, two SO_REUSEADDR sockets can bind the same port unless one is in LISTEN.
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     sock.bind(("127.0.0.1", 0))
+    sock.listen(1)
     _, port = sock.getsockname()
     try:
         assert _check_port_available("127.0.0.1", port) is False

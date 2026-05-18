@@ -9,6 +9,13 @@ from omega.sqlite_store import SQLiteStore
 _HAS_PRO = hasattr(SQLiteStore, "batch_record_feedback")
 _skip_pro = pytest.mark.skipif(not _HAS_PRO, reason="pro-only feature")
 
+# Some Pro-tier tests also depend on omega.pattern_learner which is stripped
+# from the public package independently of batch_record_feedback.
+_HAS_PATTERN_LEARNER = importlib.util.find_spec("omega.pattern_learner") is not None
+_skip_no_pattern_learner = pytest.mark.skipif(
+    not _HAS_PATTERN_LEARNER, reason="requires omega.pattern_learner (pro-only)"
+)
+
 
 class TestFlaggedMemoryFiltering:
     """Flagged memories should be excluded from query results."""
@@ -1257,6 +1264,7 @@ class TestCosineSimilarity:
 
 
 @_skip_pro
+@_skip_no_pattern_learner
 class TestComputeClusterBoosts:
     """Test SQLiteStore._compute_cluster_boosts."""
 

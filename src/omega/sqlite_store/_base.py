@@ -307,6 +307,12 @@ class SQLiteStoreBase:
         self._prefetch_cache: Dict[str, List[MemoryResult]] = {}
         self._refresh_hot_cache()
 
+        # Background threads spawned by bridge helpers (auto-relate,
+        # entity-extraction). close() joins these with a timeout to prevent
+        # use-after-close segfaults from in-flight sqlite-vec queries.
+        self._background_threads: list[threading.Thread] = []
+        self._bg_threads_lock = threading.Lock()
+
         # Deferred startup: integrity check, WAL checkpoint, and auto-backup
         # run in a background thread to avoid blocking MCP server init for 30+ seconds.
         self._deferred_startup_done = False
@@ -646,11 +652,37 @@ class SQLiteStoreBase:
         except Exception as e:
             logger.debug("Hot cache refresh failed: %s", e)
 
+    def register_background_thread(self, t: threading.Thread) -> None:
+        """Track a background thread that holds a reference to this store.
+
+        close() joins all registered threads with a timeout before closing
+        the sqlite connection. Without this, an in-flight sqlite-vec query
+        on a background thread can segfault after the connection is closed.
+        """
+        with self._bg_threads_lock:
+            self._background_threads.append(t)
+
+    def unregister_background_thread(self, t: threading.Thread) -> None:
+        """Remove a finished background thread from the tracking list."""
+        with self._bg_threads_lock:
+            try:
+                self._background_threads.remove(t)
+            except ValueError:
+                pass
+
     def close(self) -> None:
         """Close the database connection."""
         # Wait for deferred startup thread to finish before closing the connection
         if hasattr(self, "_deferred_thread") and self._deferred_thread.is_alive():
             self._deferred_thread.join(timeout=5.0)
+        # Join bridge-spawned background threads (auto-relate, entity-extraction)
+        # before closing the connection to prevent use-after-close segfaults.
+        if hasattr(self, "_background_threads"):
+            with self._bg_threads_lock:
+                threads = list(self._background_threads)
+            for t in threads:
+                if t.is_alive():
+                    t.join(timeout=2.0)
         self._save_stats()
         try:
             # Flush WAL before closing — helps other processes checkpoint

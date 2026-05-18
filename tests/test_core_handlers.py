@@ -1200,12 +1200,17 @@ class TestDeployGateTracking:
         for path, contents in stashed.items():
             path.write_text(contents)
 
-    def test_gate_mark_and_check(self, tmp_omega_dir):
+    def test_gate_mark_and_check(self, tmp_omega_dir, monkeypatch):
+        from omega.server import handlers
         from omega.server.handlers import (
             _mark_deploy_gate_cleared,
             _mark_coord_status_checked,
             is_deploy_gate_cleared,
         )
+        # Force Pro-available path so the test exercises the two-gate requirement.
+        # In the public package, _is_pro_available() returns False and the
+        # coord-status check is skipped, making this test's assertions invalid.
+        monkeypatch.setattr(handlers, "_is_pro_available", lambda: True)
         sid = "test-gate-core-handlers-mc"
         self._clean_gate(sid)
         stashed = self._stash_and_clean_defaults()

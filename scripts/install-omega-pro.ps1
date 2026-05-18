@@ -206,7 +206,7 @@ if ($UseUv) {
     $proWheel = Find-ProWheel
     if (-not $proWheel) {
         Write-WARN "Pro wheel not found in Downloads or Desktop."
-        Write-Host "  Please download it from https://omegamax.co/pro/dashboard" -ForegroundColor Gray
+        Write-Host "  Please download it from https://admin.omegamax.co/pro/dashboard" -ForegroundColor Gray
         Write-Host "  then press any key to continue..." -ForegroundColor Yellow
         $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
         $proWheel = Find-ProWheel
@@ -250,7 +250,7 @@ if ($UseUv) {
     $proWheel = Find-ProWheel
     if (-not $proWheel) {
         Write-WARN "Pro wheel not found in Downloads or Desktop."
-        Write-Host "  Please download it from https://omegamax.co/pro/dashboard" -ForegroundColor Gray
+        Write-Host "  Please download it from https://admin.omegamax.co/pro/dashboard" -ForegroundColor Gray
         Write-Host "  then press any key to continue..." -ForegroundColor Yellow
         $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
         $proWheel = Find-ProWheel
@@ -350,7 +350,7 @@ if ([string]::IsNullOrWhiteSpace($licenseKey)) {
 
 Write-Step 7 "Opening Pro dashboard"
 
-Start-Process "https://omegamax.co/pro/dashboard"
+Start-Process "https://admin.omegamax.co/pro/dashboard"
 
 # ═══════════════════════════════════════════════════════════════════════
 # Summary

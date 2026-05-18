@@ -835,14 +835,30 @@ def _auto_relate(store, node_id: str, max_related: int = 3, min_similarity: floa
 
 
 def _schedule_auto_relate(store, node_id: str) -> None:
-    """Fire _auto_relate in a background daemon thread (non-blocking)."""
+    """Fire _auto_relate in a background daemon thread (non-blocking).
+
+    Registers the thread on the store so close() can join it before tearing
+    down the sqlite connection (prevents use-after-close segfaults in
+    sqlite-vec native code during test teardown).
+    """
+    t_ref: list[threading.Thread] = []
+
     def _run():
         try:
             _auto_relate(store, node_id)
         except Exception as e:
             logger.debug(f"Background _auto_relate failed for {node_id[:12]}: {e}")
+        finally:
+            if t_ref and hasattr(store, "unregister_background_thread"):
+                try:
+                    store.unregister_background_thread(t_ref[0])
+                except Exception:
+                    pass
 
     t = threading.Thread(target=_run, daemon=True, name="auto-relate")
+    t_ref.append(t)
+    if hasattr(store, "register_background_thread"):
+        store.register_background_thread(t)
     t.start()
 
 
@@ -996,6 +1012,8 @@ def _schedule_entity_extraction(
     if not _os.environ.get("ANTHROPIC_API_KEY"):
         return
 
+    t_ref: list[threading.Thread] = []
+
     def _run():
         try:
             from omega_platform.entity.extraction import extract_entities, resolve_and_link
@@ -1008,8 +1026,17 @@ def _schedule_entity_extraction(
                 resolve_and_link(store, em, node_id, extraction)
         except Exception as e:
             logger.debug("Async entity extraction failed: %s", e)
+        finally:
+            if t_ref and hasattr(store, "unregister_background_thread"):
+                try:
+                    store.unregister_background_thread(t_ref[0])
+                except Exception:
+                    pass
 
     t = threading.Thread(target=_run, daemon=True, name="entity-extraction")
+    t_ref.append(t)
+    if hasattr(store, "register_background_thread"):
+        store.register_background_thread(t)
     t.start()
 
 

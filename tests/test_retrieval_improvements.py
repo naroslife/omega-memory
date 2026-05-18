@@ -127,14 +127,25 @@ class TestCrossEncoderReranking:
         assert _RERANKER_MODEL_NAME in ("ms-marco-MiniLM-L-6-v2", "bge-reranker-v2-m3")
 
     def test_available_models_registry(self):
-        """Both model configs should be in the registry."""
+        """Both model configs should be in the registry.
+
+        bge-reranker-v2-m3 uses the multi-precision schema (precisions.<p>.{dir,files});
+        ms-marco-MiniLM-L-6-v2 uses the flat schema (dir, files at top level).
+        """
         from omega.reranker import _AVAILABLE_MODELS
         assert "bge-reranker-v2-m3" in _AVAILABLE_MODELS
         assert "ms-marco-MiniLM-L-6-v2" in _AVAILABLE_MODELS
         for name, config in _AVAILABLE_MODELS.items():
             assert "repo_id" in config
-            assert "dir" in config
-            assert "files" in config
+            if "precisions" in config:
+                assert "default_precision" in config
+                assert config["default_precision"] in config["precisions"]
+                for variant in config["precisions"].values():
+                    assert "dir" in variant
+                    assert "files" in variant
+            else:
+                assert "dir" in config
+                assert "files" in config
 
 
 # ============================================================================
