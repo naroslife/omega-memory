@@ -463,13 +463,21 @@ async def _socket_watchdog():
             logger.warning("Hook socket deleted, re-creating...")
             await start_hook_server()
         else:
-            # Validate socket is actually ours and responsive
+            # Validate socket is actually ours and responsive.
+            # A successful open_unix_connection is sufficient — the teardown
+            # can race with the server's writer.wait_closed() and raise
+            # ConnectionResetError (OSError), which is a false positive.
             try:
                 r, w = await asyncio.wait_for(
                     asyncio.open_unix_connection(path=str(SOCK_PATH)), timeout=2.0
                 )
+                # Socket is alive — close is best-effort, don't let teardown
+                # races trigger a false "unresponsive" recreation.
                 w.close()
-                await w.wait_closed()
+                try:
+                    await asyncio.wait_for(w.wait_closed(), timeout=1.0)
+                except (OSError, asyncio.TimeoutError):
+                    pass
             except (OSError, asyncio.TimeoutError):
                 logger.warning("Hook socket unresponsive, re-creating...")
                 try:
