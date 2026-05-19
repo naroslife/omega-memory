@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """OMEGA SessionStart hook — Welcome briefing with recent context."""
-import fcntl
 import os
 import time
 import traceback
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:  # Windows: no fcntl, fall back to best-effort no-op locking.
+    fcntl = None  # type: ignore[assignment]
 
 
 def _log_hook_error(hook_name, error):
@@ -35,11 +39,12 @@ def _try_acquire_periodic(marker_name: str, min_age_days: int):
     marker = omega_dir / marker_name
     lock_path = omega_dir / f"{marker_name}.lock"
     lock_fd = os.open(str(lock_path), os.O_WRONLY | os.O_CREAT, 0o600)
-    try:
-        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except (OSError, BlockingIOError):
-        os.close(lock_fd)
-        return None  # Another process holds the lock
+    if fcntl is not None:
+        try:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except (OSError, BlockingIOError):
+            os.close(lock_fd)
+            return None  # Another process holds the lock
 
     try:
         old_content = None
@@ -58,7 +63,11 @@ def _try_acquire_periodic(marker_name: str, min_age_days: int):
     except Exception:
         return None
     finally:
-        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        if fcntl is not None:
+            try:
+                fcntl.flock(lock_fd, fcntl.LOCK_UN)
+            except OSError:
+                pass
         os.close(lock_fd)
 
 

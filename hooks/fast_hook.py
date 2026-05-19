@@ -165,7 +165,12 @@ def delegate(hook_names, payload, timeout=5.0):
             if not chunk:
                 break
             response += chunk
-        return json.loads(response.decode("utf-8"))
+        try:
+            return json.loads(response.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            # Daemon crashed mid-write — treat as a transient connection error
+            # so the retry loop in main() can handle it uniformly.
+            raise OSError(f"daemon response parse error: {exc}") from exc
     finally:
         s.close()
 

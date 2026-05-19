@@ -70,8 +70,50 @@ _BEST_EFFORT_HOOKS = {
 }
 
 # Retry settings for startup race (hook fires before MCP server opens socket)
-_CONNECT_RETRIES = 4
-_CONNECT_RETRY_DELAY = 0.5  # seconds between retries
+# Kept low: retries only help during the narrow window where MCP server is
+# actively starting.  A stale socket (daemon crashed/exited) is detected and
+# cleaned up immediately — no retries needed for that case.
+_CONNECT_RETRIES = 2
+_CONNECT_RETRY_DELAY = 0.15  # seconds between retries
+
+
+def _is_socket_stale(sock_path):
+    """Check if a Unix domain socket is stale (no listener).
+
+    A stale socket means the daemon that created it has exited without
+    cleaning up.  We detect this via a non-blocking connect: if the OS
+    immediately returns ECONNREFUSED, no process is listening.  In that
+    case we remove the socket file so subsequent calls get a fast
+    FileNotFoundError instead of wasting time on retries.
+
+    Returns True if the socket was stale (and removed), False otherwise.
+    """
+    if sys.platform == "win32" or not sock_path:
+        return False
+    try:
+        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        s.setblocking(False)
+        try:
+            s.connect(sock_path)
+        except BlockingIOError:
+            # Connection in progress — daemon might be alive, not stale
+            return False
+        except ConnectionRefusedError:
+            # No listener — stale socket
+            try:
+                os.unlink(sock_path)
+            except OSError:
+                pass
+            return True
+        except FileNotFoundError:
+            return True  # Already gone
+        except OSError:
+            return False  # Unknown state, don't remove
+        finally:
+            s.close()
+    except Exception:
+        return False
+    return False
 
 
 def _detect_client() -> str:
@@ -119,7 +161,12 @@ def delegate(hook_names, payload, timeout=5.0):
             if not chunk:
                 break
             response += chunk
-        return json.loads(response.decode("utf-8"))
+        try:
+            return json.loads(response.decode("utf-8"))
+        except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+            # Daemon crashed mid-write — treat as a transient connection error
+            # so the retry loop in main() can handle it uniformly.
+            raise OSError(f"daemon response parse error: {exc}") from exc
     finally:
         s.close()
 
@@ -253,20 +300,25 @@ def main():
     if _SLOW_HOOKS.intersection(hook_names):
         timeout = 20.0
 
-    # Try daemon connection with retries (handles startup race where
-    # SessionStart hook fires before MCP server opens the socket).
-    result = None
-    for attempt in range(_CONNECT_RETRIES + 1):
-        try:
-            result = delegate(hook_names if is_batch else hook_names[0], payload, timeout=timeout)
-            break
-        except socket.timeout:
-            break  # Daemon exists but slow — don't retry, fall through
-        except FileNotFoundError:
-            break  # Socket file missing — daemon not started, skip retries
-        except (ConnectionRefusedError, OSError):
-            if attempt < _CONNECT_RETRIES:
-                time.sleep(_CONNECT_RETRY_DELAY)
+    # Fast-path: if socket is stale (daemon exited without cleanup),
+    # remove it immediately and skip to fallback — no retries needed.
+    if SOCK_PATH and _is_socket_stale(SOCK_PATH):
+        result = None
+    else:
+        # Try daemon connection with retries (handles startup race where
+        # SessionStart hook fires before MCP server opens the socket).
+        result = None
+        for attempt in range(_CONNECT_RETRIES + 1):
+            try:
+                result = delegate(hook_names if is_batch else hook_names[0], payload, timeout=timeout)
+                break
+            except socket.timeout:
+                break  # Daemon exists but slow — don't retry, fall through
+            except FileNotFoundError:
+                break  # Socket file missing — daemon not started, skip retries
+            except (ConnectionRefusedError, OSError):
+                if attempt < _CONNECT_RETRIES:
+                    time.sleep(_CONNECT_RETRY_DELAY)
 
     elapsed_ms = (time.monotonic() - t0) * 1000
 

@@ -137,7 +137,7 @@ _SQLITE_EXECUTOR = ThreadPoolExecutor(
 # Dedicated executor for hook handlers — prevents hooks from starving behind
 # MCP tool calls that saturate _SQLITE_EXECUTOR. SQLite WAL mode handles
 # concurrent reader access safely across both executors.
-_HOOK_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="omega-hook")
+_HOOK_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="omega-hook")
 
 # RSS memory watchdog threshold (bytes). Default 1 GB for stdio, 4 GB for HTTP daemon.
 # Override with OMEGA_RSS_LIMIT_MB env var. HTTP daemon serves 8-10 concurrent Claude
