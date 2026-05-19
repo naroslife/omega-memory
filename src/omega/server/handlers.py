@@ -1231,8 +1231,11 @@ async def handle_omega_backup(arguments: dict) -> dict:
         try:
             from omega.bridge import import_memories
 
-            result = import_memories(filepath=str(real_at_open), clear_existing=clear_existing)
-            return mcp_response(result)
+            return await _run_or_submit_maintain(
+                "restore",
+                lambda: import_memories(filepath=str(real_at_open), clear_existing=clear_existing),
+                arguments,
+            )
         except Exception as e:
             logger.error("omega_backup import failed: %s", e, exc_info=True)
             return mcp_error("Import failed (internal error)")
@@ -1246,18 +1249,19 @@ async def handle_omega_backup(arguments: dict) -> dict:
             return mcp_error("Export target must not be a symlink")
         try:
             from omega.bridge import export_memories
-
-            result = export_memories(filepath=str(resolved))
-            # Warn if encryption is enabled — export is plaintext
             from omega.crypto import is_enabled as crypto_enabled
 
-            if crypto_enabled():
-                result["warning"] = (
-                    "OMEGA_ENCRYPT is enabled but exports are plaintext. "
-                    "The export file contains unencrypted memory content. "
-                    "Store it securely or delete after use."
-                )
-            return mcp_response(result)
+            def _do_export() -> dict:
+                result = export_memories(filepath=str(resolved))
+                if crypto_enabled():
+                    result["warning"] = (
+                        "OMEGA_ENCRYPT is enabled but exports are plaintext. "
+                        "The export file contains unencrypted memory content. "
+                        "Store it securely or delete after use."
+                    )
+                return result
+
+            return await _run_or_submit_maintain("backup", _do_export, arguments)
         except Exception as e:
             logger.error("omega_backup export failed: %s", e, exc_info=True)
             return mcp_error("Export failed (internal error)")
@@ -1412,8 +1416,11 @@ async def handle_omega_consolidate(arguments: dict) -> dict:
     try:
         from omega.bridge import consolidate
 
-        result = consolidate(prune_days=prune_days, max_summaries=max_summaries)
-        return mcp_response(result)
+        return await _run_or_submit_maintain(
+            "consolidate",
+            lambda: consolidate(prune_days=prune_days, max_summaries=max_summaries),
+            arguments,
+        )
     except Exception as e:
         logger.error("omega_consolidate failed: %s", e, exc_info=True)
         return mcp_error("Consolidation failed")
@@ -1507,13 +1514,16 @@ async def handle_omega_compact(arguments: dict) -> dict:
     try:
         from omega.bridge import compact
 
-        result = compact(
-            event_type=event_type,
-            similarity_threshold=similarity_threshold,
-            min_cluster_size=min_cluster_size,
-            dry_run=dry_run,
+        return await _run_or_submit_maintain(
+            "compact",
+            lambda: compact(
+                event_type=event_type,
+                similarity_threshold=similarity_threshold,
+                min_cluster_size=min_cluster_size,
+                dry_run=dry_run,
+            ),
+            arguments,
         )
-        return mcp_response(result)
     except Exception as e:
         logger.error("omega_compact failed: %s", e, exc_info=True)
         return mcp_error("Compact failed")
@@ -2324,6 +2334,70 @@ async def handle_omega_remind_composite(arguments: dict) -> dict:
 # ============================================================================
 
 
+def _format_job_payload(job, action: str) -> str:
+    """Render a Job dict as readable text for MCP response."""
+    lines = [
+        f"Job submitted: {job.id}",
+        f"Action: {action}",
+        f"Status: {job.status}",
+        f"Poll with: omega_maintain action=job_status job_id={job.id}",
+    ]
+    return "\n".join(lines)
+
+
+def _format_job_status(job) -> str:
+    """Render a Job's current state as readable text."""
+    lines = [f"Job {job.id} ({job.name})", f"Status: {job.status}"]
+    if job.started_at is not None:
+        lines.append(f"Started: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(job.started_at))}")
+    if job.finished_at is not None:
+        elapsed = round(job.finished_at - (job.started_at or job.submitted_at), 3)
+        lines.append(f"Finished: {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(job.finished_at))}")
+        lines.append(f"Elapsed: {elapsed}s")
+    if job.status == "succeeded":
+        lines.append("")
+        lines.append("Result:")
+        lines.append(str(job.result))
+    elif job.status == "failed":
+        lines.append("")
+        lines.append(f"Error: {job.error}")
+    return "\n".join(lines)
+
+
+async def _run_or_submit_maintain(
+    action_name: str,
+    fn,
+    arguments: dict,
+) -> dict:
+    """Run a synchronous maintenance callable.
+
+    Heavy maintenance ops can exceed the MCP client's RPC timeout (~4 min) and
+    cause "Server disconnected" errors. They also block the asyncio event loop
+    if awaited directly. Both problems are avoided by routing through the
+    shared SQLite executor.
+
+    Modes:
+    - wait=False (default): submit as a background Job, return job_id immediately.
+      Poll with action=job_status.
+    - wait=True: block on the executor and return the full result. Useful for
+      tests, CLI bridges, and short ops.
+    """
+    import asyncio
+
+    wait = bool(arguments.get("wait", False))
+    from omega.server.mcp_server import _SQLITE_EXECUTOR
+
+    if wait:
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(_SQLITE_EXECUTOR, fn)
+        return mcp_response(result)
+
+    from omega.server.jobs import get_registry
+
+    job = get_registry().submit(action_name, fn)
+    return mcp_response(_format_job_payload(job, action_name))
+
+
 async def handle_omega_maintain(arguments: dict) -> dict:
     """Route omega_maintain actions to existing handlers."""
     action = arguments.get("action", "").strip()
@@ -2350,12 +2424,15 @@ async def handle_omega_maintain(arguments: dict) -> dict:
                 similarity_threshold = max(0.5, min(0.95, float(raw_threshold)))
             else:
                 similarity_threshold = 0.70
-            result = discover_connections(
-                lookback_hours=lookback_hours,
-                similarity_threshold=similarity_threshold,
-                dry_run=dry_run,
+            return await _run_or_submit_maintain(
+                "discover_connections",
+                lambda: discover_connections(
+                    lookback_hours=lookback_hours,
+                    similarity_threshold=similarity_threshold,
+                    dry_run=dry_run,
+                ),
+                arguments,
             )
-            return mcp_response(result)
         except Exception as e:
             logger.error("discover_connections failed: %s", e, exc_info=True)
             return mcp_error("Connection discovery failed")
@@ -2363,8 +2440,11 @@ async def handle_omega_maintain(arguments: dict) -> dict:
         try:
             from omega.bridge import synthesize_system_insights
             dry_run = arguments.get("dry_run", True)
-            result = synthesize_system_insights(dry_run=dry_run)
-            return mcp_response(result)
+            return await _run_or_submit_maintain(
+                "synthesize_insights",
+                lambda: synthesize_system_insights(dry_run=dry_run),
+                arguments,
+            )
         except Exception as e:
             logger.error("synthesize_insights failed: %s", e, exc_info=True)
             return mcp_error("Synthesize insights failed")
@@ -2372,11 +2452,28 @@ async def handle_omega_maintain(arguments: dict) -> dict:
         try:
             from omega.bridge import backfill_embeddings
             batch_size = _clamp_int(arguments.get("batch_size", 50), default=50, max_val=200)
-            result = backfill_embeddings(batch_size=batch_size)
-            return mcp_response(result)
+            return await _run_or_submit_maintain(
+                "backfill_embeddings",
+                lambda: backfill_embeddings(batch_size=batch_size),
+                arguments,
+            )
         except Exception as e:
             logger.error("backfill_embeddings failed: %s", e, exc_info=True)
             return mcp_error("Backfill embeddings failed")
+    elif action == "job_status":
+        job_id = arguments.get("job_id", "").strip()
+        if not job_id:
+            return mcp_error("job_id is required for job_status")
+        try:
+            from omega.server.jobs import get_registry
+
+            job = get_registry().get(job_id)
+            if job is None:
+                return mcp_error(f"Job {job_id} not found (expired or unknown)")
+            return mcp_response(_format_job_status(job))
+        except Exception as e:
+            logger.error("job_status failed: %s", e, exc_info=True)
+            return mcp_error("Job status failed")
     elif action == "list_constraints":
         try:
             from omega.bridge import list_constraints
@@ -2408,7 +2505,7 @@ async def handle_omega_maintain(arguments: dict) -> dict:
             logger.error("save_constraints failed: %s", e, exc_info=True)
             return mcp_error("Save constraints failed")
     else:
-        return mcp_error(f"Unknown omega_maintain action: {action}. Use: health, consolidate, compact, discover_connections, backup, restore, clear_session, synthesize_insights, backfill_embeddings, list_constraints, check_constraint, save_constraints")
+        return mcp_error(f"Unknown omega_maintain action: {action}. Use: health, consolidate, compact, discover_connections, backup, restore, clear_session, synthesize_insights, backfill_embeddings, job_status, list_constraints, check_constraint, save_constraints")
 
 
 # ============================================================================

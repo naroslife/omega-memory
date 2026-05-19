@@ -802,12 +802,12 @@ class TestOmegaMaintain:
     def test_maintain_consolidate(self):
         from omega.server.handlers import handle_omega_maintain
         _store("Memory for consolidation test")
-        result = run_async(handle_omega_maintain({"action": "consolidate"}))
+        result = run_async(handle_omega_maintain({"action": "consolidate", "wait": True}))
         assert not _is_error(result)
 
     def test_maintain_compact(self):
         from omega.server.handlers import handle_omega_maintain
-        result = run_async(handle_omega_maintain({"action": "compact"}))
+        result = run_async(handle_omega_maintain({"action": "compact", "wait": True}))
         assert not _is_error(result)
 
     def test_maintain_backup_restore(self):
@@ -825,6 +825,7 @@ class TestOmegaMaintain:
             export_result = run_async(handle_omega_maintain({
                 "action": "backup",
                 "filepath": export_path,
+                "wait": True,
             }))
             assert not _is_error(export_result), f"Export failed: {_text(export_result)}"
 
@@ -832,6 +833,7 @@ class TestOmegaMaintain:
             restore_result = run_async(handle_omega_maintain({
                 "action": "restore",
                 "filepath": export_path,
+                "wait": True,
             }))
             assert not _is_error(restore_result), f"Restore failed: {_text(restore_result)}"
         finally:

@@ -247,7 +247,7 @@ class TestOmegaConsolidate:
     @pytest.mark.asyncio
     async def test_consolidate_on_empty_store(self):
         """Consolidation on an empty store should succeed without errors."""
-        result = await HANDLERS["omega_consolidate"]({})
+        result = await HANDLERS["omega_consolidate"]({"wait": True})
         assert not _is_error(result)
         text = _text(result)
         assert "Consolidation" in text
@@ -267,6 +267,7 @@ class TestOmegaBackup:
             result = await HANDLERS["omega_backup"]({
                 "mode": "export",
                 "filepath": filepath,
+                "wait": True,
             })
         assert not _is_error(result)
         text = _text(result)
@@ -282,12 +283,14 @@ class TestOmegaBackup:
             export_result = await HANDLERS["omega_backup"]({
                 "mode": "export",
                 "filepath": filepath,
+                "wait": True,
             })
             assert not _is_error(export_result)
 
             import_result = await HANDLERS["omega_backup"]({
                 "mode": "import",
                 "filepath": filepath,
+                "wait": True,
             })
             assert not _is_error(import_result)
             assert "Import" in _text(import_result)

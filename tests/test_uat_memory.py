@@ -473,7 +473,7 @@ class TestUATConsolidationPipeline:
     @pytest.mark.asyncio
     async def test_consolidate_empty_store(self):
         """UAT: Consolidation on empty store reports nothing to do."""
-        result = await HANDLERS["omega_consolidate"]({})
+        result = await HANDLERS["omega_consolidate"]({"wait": True})
         assert not _is_error(result)
         text = _text(result)
         assert "Consolidation" in text
@@ -486,7 +486,7 @@ class TestUATConsolidationPipeline:
                 "content": f"Consolidation test lesson number {i} about OMEGA memory management and optimization strategies",
                 "event_type": "lesson_learned",
             })
-        result = await HANDLERS["omega_consolidate"]({"prune_days": 1})
+        result = await HANDLERS["omega_consolidate"]({"prune_days": 1, "wait": True})
         assert not _is_error(result)
         text = _text(result)
         assert "Before:" in text or "After:" in text
@@ -497,6 +497,7 @@ class TestUATConsolidationPipeline:
         result = await HANDLERS["omega_compact"]({
             "event_type": "lesson_learned",
             "dry_run": True,
+            "wait": True,
         })
         assert not _is_error(result)
         text = _text(result)
@@ -599,6 +600,7 @@ class TestUATExportImport:
             result = await HANDLERS["omega_backup"]({
                 "mode": "export",
                 "filepath": filepath,
+                "wait": True,
             })
         assert not _is_error(result)
         text = _text(result)
@@ -619,6 +621,7 @@ class TestUATExportImport:
             result = await HANDLERS["omega_backup"]({
                 "mode": "export",
                 "filepath": filepath,
+                "wait": True,
             })
             assert not _is_error(result)
 
@@ -627,6 +630,7 @@ class TestUATExportImport:
                 "mode": "import",
                 "filepath": filepath,
                 "clear_existing": True,
+                "wait": True,
             })
             assert not _is_error(result)
             text = _text(result)

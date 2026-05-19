@@ -426,7 +426,7 @@ async def test_omega_timeline_empty():
 @pytest.mark.asyncio
 async def test_omega_consolidate_empty():
     """Consolidation on empty store returns clean report."""
-    result = await HANDLERS["omega_consolidate"]({})
+    result = await HANDLERS["omega_consolidate"]({"wait": True})
     assert not result.get("isError")
     text = result["content"][0]["text"]
     assert "Consolidation" in text
@@ -436,7 +436,7 @@ async def test_omega_consolidate_empty():
 async def test_omega_consolidate_with_data():
     """Consolidation with data returns a breakdown."""
     await _store_test_memory("Consolidation test memory")
-    result = await HANDLERS["omega_consolidate"]({"prune_days": 30, "max_summaries": 50})
+    result = await HANDLERS["omega_consolidate"]({"prune_days": 30, "max_summaries": 50, "wait": True})
     assert not result.get("isError")
     text = result["content"][0]["text"]
     assert "Consolidation" in text

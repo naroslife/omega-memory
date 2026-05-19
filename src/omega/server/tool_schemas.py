@@ -229,11 +229,11 @@ TOOL_SCHEMAS = [
     },
     {
         "name": "omega_maintain",
-        "description": "System housekeeping and constraint management. Use 'health' to check database size and integrity, 'consolidate' to prune stale memories, 'compact' to merge near-duplicates, 'discover_connections' to actively find and link related memories (generates cross-type insights), 'backup'/'restore' for data safety, 'clear_session' to purge a session's data, 'synthesize_insights' to generate system insights, 'backfill_embeddings' to fill missing vectors, 'list_constraints'/'check_constraint'/'save_constraints' to manage file constraint rules.",
+        "description": "System housekeeping and constraint management. Use 'health' to check database size and integrity, 'consolidate' to prune stale memories, 'compact' to merge near-duplicates, 'discover_connections' to actively find and link related memories (generates cross-type insights), 'backup'/'restore' for data safety, 'clear_session' to purge a session's data, 'synthesize_insights' to generate system insights, 'backfill_embeddings' to fill missing vectors, 'job_status' to poll a previously submitted async job, 'list_constraints'/'check_constraint'/'save_constraints' to manage file constraint rules. Long-running actions (consolidate, compact, backup, restore, discover_connections, synthesize_insights, backfill_embeddings) return a job_id immediately and run in the background to avoid client RPC timeouts; poll with action='job_status'. Pass wait=true to block instead.",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "action": {"type": "string", "enum": ["health", "consolidate", "compact", "discover_connections", "backup", "restore", "clear_session", "synthesize_insights", "backfill_embeddings", "list_constraints", "check_constraint", "save_constraints"], "description": "Maintenance operation"},
+                "action": {"type": "string", "enum": ["health", "consolidate", "compact", "discover_connections", "backup", "restore", "clear_session", "synthesize_insights", "backfill_embeddings", "job_status", "list_constraints", "check_constraint", "save_constraints"], "description": "Maintenance operation"},
                 "warn_mb": {"type": "number", "description": "Warning threshold MB (health, default 350)", "default": 350},
                 "critical_mb": {"type": "number", "description": "Critical threshold MB (health, default 800)", "default": 800},
                 "max_nodes": {"type": "integer", "description": "Max expected nodes (health, default 10000)", "default": 10000},
@@ -250,6 +250,8 @@ TOOL_SCHEMAS = [
                 "file_path": {"type": "string", "description": "File path to check (only for action='check_constraint')"},
                 "rules": {"type": "array", "items": {"type": "object"}, "description": "Constraint rules to save (only for action='save_constraints'). Each: {pattern, constraint, severity}"},
                 "batch_size": {"type": "integer", "description": "Batch size (only for action='backfill_embeddings', default 50)", "default": 50},
+                "wait": {"type": "boolean", "description": "If true, block until the action finishes and return the full result. If false (default for long-running actions), return a job_id immediately and run in the background.", "default": False},
+                "job_id": {"type": "string", "description": "Job id returned by a prior async submission (only for action='job_status')"},
             },
             "required": ["action"],
         },
