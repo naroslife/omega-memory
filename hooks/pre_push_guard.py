@@ -51,6 +51,26 @@ def _log_timing(hook_name, elapsed_ms):
 
 
 def main():
+    # Bridge: try the in-process daemon handler first for zero-drift parity
+    # with the hook_server. Falls through to the legacy logic below if the
+    # bridge module is unavailable (core-only install) or the handler raises.
+    try:
+        try:
+            from ._fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler
+        except Exception:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from _fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler  # type: ignore
+        payload = build_payload_from_env()
+        result = try_daemon_handler(
+            "omega_platform.server.hook_server.guards",
+            "handle_pre_push_guard",
+            payload,
+        )
+        if result is not None:
+            emit_result(result)  # calls sys.exit, never returns
+    except Exception:
+        pass  # bridge layer itself broke; fall through to legacy logic
+    # --- legacy fallback below (unchanged) ---
     tool_name = os.environ.get("TOOL_NAME", "")
     tool_input = os.environ.get("TOOL_INPUT", "{}")
 
@@ -115,7 +135,7 @@ def _check_push_divergence(command):
 
         # Log divergence event BEFORE exit (fix: was dead code after sys.exit)
         try:
-            from omega.coordination import get_manager
+            from omega_platform.orchestrator.coordination import get_manager
             mgr = get_manager()
             mgr.log_git_event(
                 project=project,
@@ -216,7 +236,7 @@ def _parse_checkout_target(command):
 def _block_if_branch_claimed(session_id, project, branch):
     """Block if the branch is claimed by another agent."""
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         info = mgr.check_branch(project, branch)
 
@@ -280,7 +300,7 @@ def _block_if_directory_occupied(session_id, project, target_branch):
         return  # Same branch or detached HEAD, no contention
 
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
 
         info = mgr.check_branch(project, current_branch)
@@ -320,7 +340,7 @@ def _auto_claim_on_checkout(session_id, project, branch):
     if not session_id or not branch or branch in ("main", "master", "HEAD"):
         return
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         mgr.claim_branch(
             project=project, branch=branch,
@@ -344,7 +364,7 @@ def _auto_claim_branch(command):
         branch = _get_current_branch(project)
         if not branch or branch == "HEAD":
             return
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         mgr.claim_branch(project=project, branch=branch, session_id=session_id, task="pushing to remote")
     except ImportError:
@@ -356,7 +376,7 @@ def _auto_claim_branch(command):
 def _log_push_event(project, branch, session_id):
     """Log a push event to coordination."""
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
 
         result = subprocess.run(

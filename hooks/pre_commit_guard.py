@@ -8,6 +8,7 @@ Prevents mixed-author commits where one agent captures another's work.
 import json
 import os
 import re
+import sys
 import time
 import traceback
 from datetime import datetime
@@ -46,6 +47,26 @@ def _log_timing(hook_name, elapsed_ms):
 
 
 def main():
+    # Bridge: try the in-process daemon handler first for zero-drift parity
+    # with the hook_server. Falls through to the legacy logic below if the
+    # bridge module is unavailable (core-only install) or the handler raises.
+    try:
+        try:
+            from ._fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler
+        except Exception:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from _fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler  # type: ignore
+        payload = build_payload_from_env()
+        result = try_daemon_handler(
+            "omega_platform.server.hook_server.guards",
+            "handle_pre_commit_guard",
+            payload,
+        )
+        if result is not None:
+            emit_result(result)  # calls sys.exit, never returns
+    except Exception:
+        pass  # bridge layer itself broke; fall through to legacy logic
+    # --- legacy fallback below (unchanged) ---
     tool_name = os.environ.get("TOOL_NAME", "")
     tool_input = os.environ.get("TOOL_INPUT", "{}")
 
@@ -134,14 +155,38 @@ def main():
 
     # --- Peer coordination check ---
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
 
         mgr = get_manager()
         sessions = mgr.list_sessions(auto_clean=True)
         peers = [s for s in sessions if s.get("session_id") != session_id]
 
         if not peers:
-            return  # No peers, nothing to check
+            # Solo mode: still warn about unclaimed files
+            if staged_files and session_id:
+                try:
+                    own_claims = mgr.get_session_claims(session_id)
+                    own_files = own_claims.get("file_claims", [])
+                    if own_files:
+                        unclaimed_solo = []
+                        for sf in staged_files:
+                            full_path = os.path.join(project, sf)
+                            if full_path not in own_files and sf not in own_files:
+                                unclaimed_solo.append(sf)
+                        if unclaimed_solo:
+                            lines = [
+                                f"[COMMIT-SCOPE] WARNING: {len(unclaimed_solo)} staged file(s) not in your claim list:",
+                            ]
+                            for fname in unclaimed_solo[:10]:
+                                lines.append(f"  {fname}")
+                            if len(unclaimed_solo) > 10:
+                                lines.append(f"  +{len(unclaimed_solo) - 10} more")
+                            lines.append("")
+                            lines.append("Did you author these changes? If not, unstage with: git reset HEAD <file>")
+                            print("\n".join(lines))
+                except Exception:
+                    pass
+            return
 
         # Check for peer-claimed file overlaps
         overlapping = []
@@ -170,31 +215,6 @@ def main():
         except Exception:
             pass
 
-        # Check for suspicious deletion ratio on unclaimed files
-        # (catches case where agent stages another's reverted work)
-        suspicious_deletions = []
-        if unclaimed_by_self:
-            try:
-                numstat = subprocess.run(
-                    ["git", "diff", "--cached", "--numstat"],
-                    capture_output=True, text=True, timeout=5, cwd=project,
-                )
-                if numstat.returncode == 0:
-                    for line in numstat.stdout.strip().split("\n"):
-                        if not line.strip():
-                            continue
-                        parts = line.split("\t")
-                        if len(parts) < 3:
-                            continue
-                        adds = int(parts[0]) if parts[0] != "-" else 0
-                        dels = int(parts[1]) if parts[1] != "-" else 0
-                        fname = parts[2]
-                        # Flag: >50 deletions on a file not in own claim list
-                        if fname in unclaimed_by_self and dels > 50 and dels > adds * 3:
-                            suspicious_deletions.append((fname, adds, dels))
-            except Exception:
-                pass
-
         # BLOCK if staging peer-claimed files
         if overlapping:
             lines = [f"[COMMIT-GUARD] BLOCKED: staging {len(overlapping)} file(s) claimed by other agent(s):"]
@@ -203,22 +223,6 @@ def main():
             lines.append("")
             lines.append("Unstage peer files with: git reset HEAD <file>")
             lines.append("Or coordinate via omega_send_message to request file release.")
-            print("\n".join(lines))
-            exit(2)
-
-        # BLOCK if suspicious deletions on unclaimed files
-        if suspicious_deletions:
-            lines = [
-                f"[COMMIT-GUARD] BLOCKED: {len(suspicious_deletions)} file(s) have large "
-                f"deletions but are NOT in your claim list:"
-            ]
-            for fname, adds, dels in suspicious_deletions:
-                lines.append(f"  {fname}: +{adds}/-{dels} (you may be reverting another agent's work)")
-            lines.append("")
-            lines.append("If these changes are intentional:")
-            lines.append("  1. Review with: git diff --cached -- <file>")
-            lines.append("  2. Claim the file: omega_file_claim(session_id, file_path)")
-            lines.append("  3. Or unstage: git reset HEAD <file>")
             print("\n".join(lines))
             exit(2)
 

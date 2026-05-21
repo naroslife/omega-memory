@@ -84,14 +84,40 @@ def _is_marker_fresh(session_id, suffix, max_age_sec=1800):
         return False
 
 
+def _is_action_claimed(session_id, max_age_sec=1800):
+    """Check if this session has claimed the deploy action."""
+    return _is_marker_fresh(session_id, "action_claim", max_age_sec)
+
+
 def _is_gate_cleared(session_id, max_age_sec=1800):
-    """Gate requires BOTH decision query AND coord_status check."""
+    """Gate requires decision query, coord_status check, AND action claim."""
     decision_ok = _is_marker_fresh(session_id, "gate", max_age_sec)
     coord_ok = _is_marker_fresh(session_id, "coord", max_age_sec)
-    return decision_ok and coord_ok
+    action_ok = _is_action_claimed(session_id, max_age_sec)
+    return decision_ok and coord_ok and action_ok
 
 
 def main():
+    # Bridge: try the in-process daemon handler first for zero-drift parity
+    # with the hook_server. Falls through to the legacy logic below if the
+    # bridge module is unavailable (core-only install) or the handler raises.
+    try:
+        try:
+            from ._fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler
+        except Exception:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from _fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler  # type: ignore
+        payload = build_payload_from_env()
+        result = try_daemon_handler(
+            "omega_platform.server.hook_server.guards",
+            "handle_pre_deploy_guard",
+            payload,
+        )
+        if result is not None:
+            emit_result(result)  # calls sys.exit, never returns
+    except Exception:
+        pass  # bridge layer itself broke; fall through to legacy logic
+    # --- legacy fallback below (unchanged) ---
     tool_name = os.environ.get("TOOL_NAME", "")
     tool_input = os.environ.get("TOOL_INPUT", "{}")
 
@@ -119,12 +145,14 @@ def main():
         missing.append("omega_query(event_type='decision', query='<target area>')")
     if not _is_marker_fresh(session_id, "coord"):
         missing.append("omega_coord_status")
+    if not _is_action_claimed(session_id):
+        missing.append("omega_action_claim(action_type='deploy', action_target='vercel:<project>')")
 
     print("\n[DEPLOY-GATE] BLOCKED: Coordination gate not cleared.")
-    print("  You MUST run BOTH of these before deploying:")
+    print("  You MUST run ALL of these before deploying:")
     for m in missing:
         print(f"    - {m}  (NOT YET RUN)")
-    print("  This prevents deploying without checking peer activity (coordination bug fix).")
+    print("  This prevents duplicate deploys across agents.")
     sys.exit(2)
 
 

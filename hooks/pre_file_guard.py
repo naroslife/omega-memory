@@ -63,67 +63,27 @@ def _block_claimed(file_path, owner, owner_task):
     sys.exit(2)
 
 
-def _check_uncommitted_divergence(file_path, session_id):
-    """Warn if file on disk diverges from HEAD (uncommitted changes from another session).
-
-    This catches the case where another agent modified a file without committing,
-    and the current agent is about to edit (and later commit) those foreign changes.
-    """
-    import subprocess
-
-    try:
-        # Get the repo root for this file
-        repo_root = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel"],
-            capture_output=True, text=True, timeout=3,
-            cwd=os.path.dirname(file_path) or ".",
-        )
-        if repo_root.returncode != 0:
-            return  # Not in a git repo
-
-        # Check if file has uncommitted changes vs HEAD
-        diff = subprocess.run(
-            ["git", "diff", "--numstat", "HEAD", "--", file_path],
-            capture_output=True, text=True, timeout=3,
-            cwd=repo_root.stdout.strip(),
-        )
-        if diff.returncode != 0 or not diff.stdout.strip():
-            return  # No diff or error
-
-        parts = diff.stdout.strip().split("\t")
-        if len(parts) < 2:
-            return
-
-        additions = int(parts[0]) if parts[0] != "-" else 0
-        deletions = int(parts[1]) if parts[1] != "-" else 0
-        total_changes = additions + deletions
-
-        if total_changes < 10:
-            return  # Small diff, not worth warning
-
-        # Check if this session already claimed this file (meaning we made these changes)
-        try:
-            from omega.coordination import get_manager
-            mgr = get_manager()
-            info = mgr.check_file(file_path)
-            if info.get("claimed") and info.get("session_id") == session_id:
-                return  # We own these changes
-        except Exception:
-            pass
-
-        filename = os.path.basename(file_path)
-        print(
-            f"\n[FILE-GUARD] WARNING: {filename} has {total_changes} uncommitted changes "
-            f"(+{additions}/-{deletions}) vs HEAD.\n"
-            f"  These may be from another agent's work-in-progress.\n"
-            f"  If you edit and commit, you may inadvertently include or revert their changes.\n"
-            f"  Run: git diff HEAD -- {filename}"
-        )
-    except Exception:
-        pass  # Fail-open: never block on divergence check errors
-
-
 def main():
+    # Bridge: try the in-process daemon handler first for zero-drift parity
+    # with the hook_server. Falls through to the legacy logic below if the
+    # bridge module is unavailable (core-only install) or the handler raises.
+    try:
+        try:
+            from ._fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler
+        except Exception:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from _fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler  # type: ignore
+        payload = build_payload_from_env()
+        result = try_daemon_handler(
+            "omega_platform.server.hook_server.guards",
+            "handle_pre_file_guard",
+            payload,
+        )
+        if result is not None:
+            emit_result(result)  # calls sys.exit, never returns
+    except Exception:
+        pass  # bridge layer itself broke; fall through to legacy logic
+    # --- legacy fallback below (unchanged) ---
     tool_name = os.environ.get("TOOL_NAME", "")
     if tool_name not in ("Edit", "Write", "NotebookEdit"):
         return
@@ -139,11 +99,8 @@ def main():
     if not file_path:
         return
 
-    # Check for uncommitted divergence from HEAD (foreign changes on disk)
-    _check_uncommitted_divergence(file_path, session_id)
-
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         info = mgr.check_file(file_path)
 

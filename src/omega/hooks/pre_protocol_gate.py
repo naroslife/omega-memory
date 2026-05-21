@@ -12,6 +12,7 @@ Exit code 0 always (informational only, never blocks).
 Fail-open: any error silently allows.
 """
 import os
+import sys
 import traceback
 from datetime import datetime
 from pathlib import Path
@@ -41,6 +42,26 @@ _warned = False
 
 def main():
     global _warned
+    # Bridge: try the in-process daemon handler first for zero-drift parity
+    # with the hook_server. Falls through to the legacy logic below if the
+    # bridge module is unavailable (core-only install) or the handler raises.
+    try:
+        try:
+            from ._fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler
+        except Exception:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from _fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler  # type: ignore
+        payload = build_payload_from_env()
+        result = try_daemon_handler(
+            "omega_platform.server.hook_server.guards",
+            "handle_pre_protocol_gate",
+            payload,
+        )
+        if result is not None:
+            emit_result(result)  # calls sys.exit, never returns
+    except Exception:
+        pass  # bridge layer itself broke; fall through to legacy logic
+    # --- legacy fallback below (unchanged) ---
     if _warned:
         return
 
