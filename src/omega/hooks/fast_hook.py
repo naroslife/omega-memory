@@ -25,7 +25,8 @@ if sys.platform == "win32":
     HOOK_HOST = "127.0.0.1"
     HOOK_PORT = 19876
 else:
-    SOCK_PATH = os.path.expanduser("~/.omega/hook.sock")
+    from omega.socket_path import resolve_hook_socket_path
+    SOCK_PATH = str(resolve_hook_socket_path())
     HOOK_HOST = None
     HOOK_PORT = None
 
