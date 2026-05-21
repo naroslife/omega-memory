@@ -24,11 +24,16 @@ Public symbols (consumed by Streams C/D):
 from __future__ import annotations
 
 import json
+import logging
 import os
+import subprocess
 import sys
+import time
 import traceback
 from datetime import datetime
 from pathlib import Path
+
+logger = logging.getLogger("omega.hooks._fallback_bridge")
 
 # Payload-key → env-var-name map. Source of truth for both fast_hook's
 # env-set logic and the inverse env-read logic used here. Mirrors the
@@ -196,3 +201,125 @@ def try_daemon_handler(module_path: str, func_name: str, payload: dict) -> dict 
     if isinstance(result, dict):
         return result
     return None
+
+
+# ---------------------------------------------------------------------------
+# Hook daemon auto-start (mirrors omega_platform.embedding_client pattern).
+#
+# When fast_hook's first connect attempt fails (FileNotFoundError or
+# ConnectionRefusedError), the in-process MCP hook server is unreachable.
+# Spawn the standalone hook daemon as a fallback executor and poll for its
+# socket. The daemon's PID lock guarantees at most one instance — concurrent
+# fast_hook invocations against a dead daemon will have at most one win the
+# spawn race; the others observe the socket appearing and connect.
+# ---------------------------------------------------------------------------
+
+
+def _hook_daemon_paths() -> tuple[Path, Path, Path]:
+    """Resolve (socket_path, pid_path, log_path) under the *current* HOME.
+
+    Resolved fresh on each call so tests overriding HOME via monkeypatch see
+    the right paths without module reloads.
+    """
+    from omega.socket_path import resolve_hook_socket_path
+
+    omega_dir = Path.home() / ".omega"
+    sock_path = resolve_hook_socket_path()
+    pid_path = omega_dir / "hook-daemon.pid"
+    log_path = omega_dir / "hook_daemon.log"
+    return sock_path, pid_path, log_path
+
+
+def _is_hook_daemon_alive(pid_path: Path) -> bool:
+    """Check whether the PID in ``pid_path`` is a live process."""
+    if not pid_path.exists():
+        return False
+    try:
+        pid_text = pid_path.read_text().strip()
+        if not pid_text:
+            return False
+        pid = int(pid_text)
+        os.kill(pid, 0)  # Signal 0 — existence probe only
+        return True
+    except (ValueError, ProcessLookupError, PermissionError, OSError):
+        return False
+
+
+def _probe_hook_socket(sock_path: Path) -> bool:
+    """Best-effort non-blocking connect probe. Returns True if a listener responds."""
+    if sys.platform == "win32" or not sock_path.exists():
+        return False
+    import socket as _socket
+
+    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    try:
+        s.settimeout(0.5)
+        s.connect(str(sock_path))
+        return True
+    except OSError:
+        return False
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
+def _cleanup_stale_hook_daemon(sock_path: Path, pid_path: Path) -> None:
+    """Remove stale socket and PID files for a dead hook daemon. Best-effort."""
+    for p in (sock_path, pid_path):
+        try:
+            p.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+
+def _auto_start_hook_daemon() -> bool:
+    """Spawn the standalone hook daemon if it is not running.
+
+    Returns True if a daemon is reachable by the end of the call (either
+    already running or spawned successfully), False otherwise. Best-effort:
+    any unexpected exception is swallowed and logged at DEBUG level.
+
+    Mirrors ``omega_platform.embedding_client._auto_start_daemon``:
+      * Skip on Windows.
+      * If the socket exists and accepts a connect, return True.
+      * If PID + socket files look stale, remove them before spawning.
+      * Spawn ``python -m omega_platform.server.hook_daemon`` detached.
+      * Poll up to 3 s (30 × 0.1 s) for the socket to appear.
+    """
+    if sys.platform == "win32":
+        return False
+    try:
+        sock_path, pid_path, log_path = _hook_daemon_paths()
+
+        # Fast path: daemon already alive and socket reachable.
+        if _is_hook_daemon_alive(pid_path) and _probe_hook_socket(sock_path):
+            return True
+
+        # Stale files (dead daemon or crashed startup) — clean before spawn.
+        if sock_path.exists() or pid_path.exists():
+            logger.debug("Cleaning up stale hook daemon files")
+            _cleanup_stale_hook_daemon(sock_path, pid_path)
+
+        # Spawn.
+        python = sys.executable or "python3"
+        log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        log_file = open(log_path, "a")  # noqa: SIM115 — owned by subprocess stderr
+        subprocess.Popen(
+            [python, "-m", "omega_platform.server.hook_daemon"],
+            stdout=subprocess.DEVNULL,
+            stderr=log_file,
+            start_new_session=True,
+        )
+
+        # Poll for the socket to appear and accept connects.
+        for _ in range(30):
+            time.sleep(0.1)
+            if _probe_hook_socket(sock_path):
+                return True
+        logger.debug("Hook daemon auto-start timed out waiting for socket")
+        return False
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.debug("Hook daemon auto-start failed: %s", exc)
+        return False
