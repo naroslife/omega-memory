@@ -14,6 +14,11 @@ import socket
 import sys
 import time
 
+try:
+    import fcntl
+except ImportError:  # Windows: no fcntl — fall through to best-effort no-lock.
+    fcntl = None  # type: ignore[assignment]
+
 # Windows uses TCP loopback; Unix uses domain socket
 if sys.platform == "win32":
     SOCK_PATH = None
@@ -197,15 +202,24 @@ def _fallback(hook_name, payload):
     # Claude Code stdin JSON uses different field names than env vars:
     #   stdin: session_id, tool_name, tool_input (dict), tool_response, cwd
     #   env:   SESSION_ID, TOOL_NAME, TOOL_INPUT (str),  TOOL_OUTPUT,  PROJECT_DIR
-    _ENV_MAP = {
-        "session_id": "SESSION_ID",
-        "tool_name": "TOOL_NAME",
-        "tool_input": "TOOL_INPUT",
-        "tool_response": "TOOL_OUTPUT",  # Claude Code calls it tool_response
-        "tool_output": "TOOL_OUTPUT",    # legacy/internal name
-        "cwd": "PROJECT_DIR",
-        "project": "PROJECT_DIR",        # internal name used by some hooks
-    }
+    # _ENV_MAP is owned by _fallback_bridge — single source of truth.
+    # Lazy import so a missing/broken bridge module never breaks the fast path.
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from _fallback_bridge import _ENV_MAP  # type: ignore
+    except Exception:
+        try:
+            from omega.hooks._fallback_bridge import _ENV_MAP  # type: ignore
+        except Exception:
+            _ENV_MAP = {
+                "session_id": "SESSION_ID",
+                "tool_name": "TOOL_NAME",
+                "tool_input": "TOOL_INPUT",
+                "tool_response": "TOOL_OUTPUT",
+                "tool_output": "TOOL_OUTPUT",
+                "cwd": "PROJECT_DIR",
+                "project": "PROJECT_DIR",
+            }
     for payload_key, env_key in _ENV_MAP.items():
         val = payload.get(payload_key)
         if val:
@@ -231,6 +245,142 @@ def _fallback(hook_name, payload):
                 mod.main()
     except Exception as e:
         print(f"OMEGA hook fallback error ({hook_name}): {e}", file=sys.stderr)
+
+
+_FALLBACK_BANNER = (
+    "============================================================\n"
+    "⚠  OMEGA daemon unavailable — running degraded fallback.\n"
+    "   Restart with /mcp inside Claude Code to restore features.\n"
+    "============================================================"
+)
+_FALLBACK_REMINDER_FMT = (
+    "⚠  OMEGA fallback in use ({n} events). /mcp reconnect to restore."
+)
+_DEGRADED_BANNER_WINDOW_SEC = 300  # 5 minutes
+
+
+def _resolve_session_id():
+    """Resolve a stable per-session identifier for fallback bookkeeping."""
+    sid = os.environ.get("SESSION_ID") or os.environ.get("CLAUDE_SESSION_ID")
+    if sid:
+        safe = "".join(c for c in sid if c.isalnum() or c in "-_")
+        if safe:
+            return safe[:128]
+    import hashlib
+    seed = f"{os.getppid()}:{int(time.time() // 3600)}"
+    return "anon-" + hashlib.sha1(seed.encode("utf-8")).hexdigest()[:16]
+
+
+def _emit_daemon_down_notice(hook_name):
+    """Print a daemon-down banner / reminder to stderr (best-effort)."""
+    try:
+        quiet = os.environ.get("OMEGA_HOOK_QUIET") == "1"
+        try:
+            interval = int(os.environ.get("OMEGA_FALLBACK_REMINDER_EVERY", "20"))
+        except (TypeError, ValueError):
+            interval = 20
+        if interval < 1:
+            interval = 20
+
+        sid = _resolve_session_id()
+        from pathlib import Path
+        sessions_dir = Path.home() / ".omega" / "sessions"
+        sessions_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        counter_path = sessions_dir / f"{sid}.fallback_count"
+
+        fd = os.open(str(counter_path), os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            if fcntl is not None:
+                try:
+                    fcntl.flock(fd, fcntl.LOCK_EX)
+                except OSError:
+                    pass
+            try:
+                os.lseek(fd, 0, os.SEEK_SET)
+                raw = b""
+                while True:
+                    chunk = os.read(fd, 4096)
+                    if not chunk:
+                        break
+                    raw += chunk
+                try:
+                    current = int(raw.decode("ascii", errors="ignore").strip() or "0")
+                except (ValueError, UnicodeDecodeError):
+                    current = 0
+                new_count = current + 1
+                os.lseek(fd, 0, os.SEEK_SET)
+                os.ftruncate(fd, 0)
+                os.write(fd, str(new_count).encode("ascii"))
+            finally:
+                if fcntl is not None:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_UN)
+                    except OSError:
+                        pass
+        finally:
+            os.close(fd)
+
+        try:
+            from pathlib import Path as _P
+            log_path = _P.home() / ".omega" / "hooks.log"
+            log_path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            from datetime import datetime as _dt
+            ts = _dt.now().isoformat(timespec="seconds")
+            line = f"[{ts}] fast_hook/{hook_name}: fallback#{new_count}\n"
+            lfd = os.open(str(log_path), os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            try:
+                os.write(lfd, line.encode("utf-8"))
+            finally:
+                os.close(lfd)
+        except Exception:
+            pass
+
+        if quiet:
+            return
+        if new_count == 1:
+            try:
+                print(_FALLBACK_BANNER, file=sys.stderr)
+            except Exception:
+                pass
+        elif new_count > 1 and (new_count % interval) == 0:
+            try:
+                print(_FALLBACK_REMINDER_FMT.format(n=new_count), file=sys.stderr)
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+
+def _check_daemon_health_marker():
+    """Surface daemon-side degradation marker (~/.omega/daemon-health.json)."""
+    try:
+        from pathlib import Path
+        marker = Path.home() / ".omega" / "daemon-health.json"
+        if not marker.exists():
+            return
+        try:
+            with open(marker, "rb") as f:
+                data = json.loads(f.read().decode("utf-8", errors="replace"))
+        except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+            return
+        if not isinstance(data, dict):
+            return
+        ts_raw = data.get("degraded_at")
+        if not isinstance(ts_raw, str):
+            return
+        from datetime import datetime, timezone
+        try:
+            ts = datetime.fromisoformat(ts_raw.replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=timezone.utc)
+        except (ValueError, TypeError):
+            return
+        now = datetime.now(timezone.utc)
+        age = (now - ts).total_seconds()
+        if 0 <= age <= _DEGRADED_BANNER_WINDOW_SEC:
+            _emit_daemon_down_notice("<degraded>")
+    except Exception:
+        pass
 
 
 def _log_timing(hook_name, elapsed_ms, mode):
@@ -294,6 +444,10 @@ def main():
     if len(sys.argv) < 2:
         print("Usage: fast_hook.py <hook_name[+hook_name...]>", file=sys.stderr)
         sys.exit(1)
+
+    # Surface daemon-side degradation BEFORE attempting connection — the
+    # daemon may technically respond but be stuck (Issue 4B).
+    _check_daemon_health_marker()
 
     t0 = time.monotonic()
     hook_names = sys.argv[1].split("+")
@@ -364,6 +518,10 @@ def main():
         # concurrent Python processes starve each other on CPU + SQLite locks.
         blocking = [h for h in hook_names if h in _BLOCKING_HOOKS]
         best_effort = [h for h in hook_names if h in _BEST_EFFORT_HOOKS]
+        if blocking or best_effort:
+            # Daemon-down user notification — fires once per session, then
+            # every Nth event. Never raises.
+            _emit_daemon_down_notice("+".join(hook_names))
         if blocking:
             for name in blocking:
                 _fallback(name, payload)
