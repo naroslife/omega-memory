@@ -145,7 +145,7 @@ def _lookup_session_tasks(results: list) -> dict:
     if not session_ids:
         return {}
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         placeholders = ",".join("?" for _ in session_ids)
         cursor = mgr._conn.execute(
@@ -506,7 +506,7 @@ def _track_git_commit(tool_input: str, tool_output: str, session_id: str, projec
         branch = None
 
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         mgr.log_git_event(
             project=project,
@@ -556,9 +556,7 @@ def _get_session_tool_names_fast(session_id: str) -> list:
     """Fast read of tool names from coord_audit for this session."""
     try:
         import sqlite3
-        db = sqlite3.connect(os.path.expanduser("~/.omega/omega.db"), timeout=10)
-        db.execute("PRAGMA journal_mode=WAL")
-        db.execute("PRAGMA busy_timeout=30000")
+        db = sqlite3.connect(os.path.expanduser("~/.omega/omega.db"), timeout=1)
         rows = db.execute(
             "SELECT tool_name FROM coord_audit WHERE session_id = ? ORDER BY call_index",
             (session_id,),
@@ -570,6 +568,26 @@ def _get_session_tool_names_fast(session_id: str) -> list:
 
 
 def main():
+    # Bridge: try the in-process daemon handler first for zero-drift parity
+    # with the hook_server. Falls through to the legacy logic below if the
+    # bridge module is unavailable (core-only install) or the handler raises.
+    try:
+        try:
+            from ._fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler
+        except Exception:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from _fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler  # type: ignore
+        payload = build_payload_from_env()
+        result = try_daemon_handler(
+            "omega_platform.server.hook_server.memory",
+            "handle_surface_memories",
+            payload,
+        )
+        if result is not None:
+            emit_result(result)  # calls sys.exit, never returns
+    except Exception:
+        pass  # bridge layer itself broke; fall through to legacy logic
+    # --- legacy fallback below (unchanged) ---
     tool_name = os.environ.get("TOOL_NAME", "")
     tool_input = os.environ.get("TOOL_INPUT", "{}")
     tool_output = os.environ.get("TOOL_OUTPUT", "")

@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """OMEGA Coordination SessionStart hook — Register agent session."""
 import os
+import sys
 import time
 import traceback
 from datetime import datetime, timezone
@@ -24,50 +25,16 @@ def _log_hook_error(hook_name, error):
 
 
 def _kill_orphaned_mcp_servers():
-    """Kill OMEGA MCP server processes whose parent has exited (PPID=1)."""
-    import signal
-    import subprocess
+    """Kill OMEGA MCP server processes whose parent has exited (PPID=1).
 
+    Delegates to pid_registry.kill_orphaned_servers() which uses PID files
+    instead of pgrep, making it faster and more reliable.
+    """
     try:
-        # Find all omega MCP server processes
-        result = subprocess.run(
-            ["pgrep", "-f", "omega.server.mcp_server"],
-            capture_output=True, text=True, timeout=5,
-        )
-        if result.returncode != 0 or not result.stdout.strip():
-            return
-
-        my_pid = os.getpid()
-        pids = [int(p) for p in result.stdout.strip().split("\n") if p.strip()]
-
-        killed = 0
-        for pid in pids:
-            if pid == my_pid:
-                continue
-            # Check if this process is orphaned (PPID=1 on macOS means parent exited)
-            ps_result = subprocess.run(
-                ["ps", "-o", "ppid=", "-p", str(pid)],
-                capture_output=True, text=True, timeout=5,
-            )
-            if ps_result.returncode != 0:
-                continue
-            ppid = ps_result.stdout.strip()
-            if ppid == "1":
-                try:
-                    os.kill(pid, signal.SIGTERM)
-                    killed += 1
-                except ProcessLookupError:
-                    pass
-                except PermissionError:
-                    pass
-
+        from omega_platform.server.pid_registry import kill_orphaned_servers
+        killed = kill_orphaned_servers()
         if killed > 0:
             _log_hook_error("orphan_cleanup", f"Killed {killed} orphaned MCP server(s)")
-
-    except subprocess.TimeoutExpired:
-        pass
-    except FileNotFoundError:
-        pass  # pgrep not available
     except Exception as e:
         _log_hook_error("orphan_cleanup", e)
 
@@ -96,6 +63,26 @@ def _clean_stale_socket():
 
 
 def main():
+    # Bridge: try the in-process daemon handler first for zero-drift parity
+    # with the hook_server. Falls through to the legacy logic below if the
+    # bridge module is unavailable (core-only install) or the handler raises.
+    try:
+        try:
+            from ._fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler
+        except Exception:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from _fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler  # type: ignore
+        payload = build_payload_from_env()
+        result = try_daemon_handler(
+            "omega_platform.server.hook_server.coordination",
+            "handle_coord_session_start",
+            payload,
+        )
+        if result is not None:
+            emit_result(result)  # calls sys.exit, never returns
+    except Exception:
+        pass  # bridge layer itself broke; fall through to legacy logic
+    # --- legacy fallback below (unchanged) ---
     session_id = os.environ.get("SESSION_ID", "")
     project = os.environ.get("PROJECT_DIR", os.getcwd())
 
@@ -106,12 +93,12 @@ def main():
     _kill_orphaned_mcp_servers()
 
     try:
-        from omega.coordination import get_manager
+        from omega_platform.orchestrator.coordination import get_manager
         mgr = get_manager()
         mgr.list_sessions()  # Force-clean stale sessions (bypasses rate limit)
         result = mgr.register_session(
             session_id=session_id,
-            pid=os.getppid(),
+            pid=os.getpid(),
             project=project,
         )
         peers = result.get("peers_on_project", 0)
@@ -284,7 +271,6 @@ def _check_running_processes(project):
             progress = ""
             if output_file:
                 try:
-                    import json
                     out_path = os.path.join(project, output_file)
                     if os.path.exists(out_path):
                         line_count = sum(1 for _ in open(out_path))
@@ -405,11 +391,11 @@ def _surface_handoff(session_id, project, mgr):
         if handoff.get("session_id") == session_id:
             return
 
-        # Check age — only surface handoffs from last 24 hours
+        # Check age — only surface handoffs from last 72 hours
         try:
             created = datetime.fromisoformat(handoff["created_at"])
             delta = datetime.now(timezone.utc).replace(tzinfo=None) - created.replace(tzinfo=None)
-            if delta.total_seconds() > 86400:
+            if delta.total_seconds() > 259200:  # 72 hours
                 return
             mins = int(delta.total_seconds() / 60)
             if mins < 60:
@@ -446,7 +432,7 @@ def _surface_handoff(session_id, project, mgr):
             more = f" +{len(handoff['files_modified']) - 5}" if len(handoff["files_modified"]) > 5 else ""
             lines.append(f"  Files: {', '.join(fnames)}{more}")
         if handoff.get("key_context"):
-            lines.append(f"  Context: {handoff['key_context'][:200]}")
+            lines.append(f"  Context: {handoff['key_context'][:400]}")
 
         print("\n".join(lines))
     except Exception as e:
@@ -493,7 +479,7 @@ def _surface_recent_peer_decisions(session_id, project):
         if not decisions:
             return
 
-        # Filter to decisions from OTHER sessions, within last 2 hours
+        # Filter to decisions from OTHER sessions, within last 24 hours
         peer_decisions = []
         now = datetime.now(timezone.utc)
         for d in decisions:
@@ -509,7 +495,7 @@ def _surface_recent_peer_decisions(session_id, project):
                     if hasattr(d_time, "tzinfo") and d_time.tzinfo is None:
                         pass  # naive datetime, compare as-is with naive now
                     delta = now.replace(tzinfo=None) - d_time.replace(tzinfo=None)
-                    if delta.total_seconds() > 7200:  # older than 2 hours
+                    if delta.total_seconds() > 86400:  # older than 24 hours
                         continue
                 except Exception:
                     continue
@@ -538,7 +524,7 @@ def _surface_recent_peer_decisions(session_id, project):
                             age_str = f" ({mins // 60}h{mins % 60}m ago)"
                     except Exception:
                         pass
-                peer_decisions.append(f"  - {first_line[:120]}{age_str}")
+                peer_decisions.append(f"  - {first_line[:250]}{age_str}")
 
             if len(peer_decisions) >= 5:
                 break
@@ -698,7 +684,7 @@ def _session_resume(session_id, project, mgr):
                 # Take first meaningful line only
                 first_line = content.split("\n")[0].strip()
                 if first_line and len(first_line) > 10:
-                    clean_decisions.append(first_line[:120])
+                    clean_decisions.append(first_line[:250])
                 if len(clean_decisions) >= 3:
                     break
             if clean_decisions:

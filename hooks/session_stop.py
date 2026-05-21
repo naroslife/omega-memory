@@ -35,16 +35,6 @@ def _build_utilization_report(tool_calls: list) -> dict:
     hit_count = len(CRITICAL_TOOLS) - len(missed)
     score = round(hit_count / len(CRITICAL_TOOLS) * 100) if CRITICAL_TOOLS else 100
 
-    # Check for verification gap: 5+ Bash calls but none matching verification patterns
-    _VERIFICATION_PATTERNS = {"pytest", "npm test", "ruff", "eslint", "gh repo view", "curl", "next build", "tsc"}
-    bash_calls = [t for t in tool_calls if t == "Bash"]
-    if len(bash_calls) >= 5:
-        # Check if any tool call looks like a verification command
-        # (tool_calls is just names, so we flag based on absence of test-like tools)
-        has_verification = any(t in normalized for t in {"pytest", "test", "lint", "build", "check"})
-        if not has_verification and "verification" not in missed:
-            missed.append("verification (0 test/build/lint commands in 5+ Bash calls)")
-
     return {"score": score, "missed": missed, "hit": hit_count, "total": len(CRITICAL_TOOLS)}
 
 
@@ -53,9 +43,7 @@ def _get_session_tool_names(session_id: str) -> list:
     try:
         import sqlite3
         db_path = os.path.expanduser("~/.omega/omega.db")
-        conn = sqlite3.connect(db_path, timeout=10)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=30000")
+        conn = sqlite3.connect(db_path, timeout=2)
         rows = conn.execute(
             "SELECT DISTINCT tool_name FROM coord_audit WHERE session_id = ?",
             (session_id,),
@@ -207,36 +195,45 @@ def _print_activity_report(session_id: str):
     except Exception:
         pass
 
-    # Check for external actions without omega_store
+    # Pro upgrade nudge -- frequency scales with memory count (closer to limit = more frequent)
     try:
-        import re as _re
-        _EXT_PATTERNS = [
-            _re.compile(r"\bgh\s+repo\s+create\b"),
-            _re.compile(r"\bgh\s+repo\s+delete\b"),
-            _re.compile(r"\bvercel\s+(?:deploy|--prod)\b"),
-            _re.compile(r"\bnpm\s+publish\b"),
-        ]
-        import sqlite3
-        db_path = os.path.expanduser("~/.omega/omega.db")
-        conn = sqlite3.connect(db_path, timeout=10)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=30000")
-        rows = conn.execute(
-            "SELECT tool_input FROM coord_audit WHERE session_id = ? AND tool_name = 'Bash'",
-            (session_id,),
-        ).fetchall()
-        conn.close()
-        has_external = False
-        for (tool_input_str,) in rows:
-            if tool_input_str:
-                for pat in _EXT_PATTERNS:
-                    if pat.search(tool_input_str):
-                        has_external = True
-                        break
-            if has_external:
-                break
-        if has_external and "omega_store" not in {t for t in tool_names}:
-            print("  [MISSED] External action without omega_store — outcome not persisted for future sessions.")
+        pro_licensed = False
+        try:
+            from omega_platform.license import is_pro
+            pro_licensed = is_pro()
+        except Exception:
+            pass
+        if not pro_licensed:
+            mem_count = 0
+            try:
+                from omega.bridge import _get_store
+                _s = _get_store()
+                mem_count = _s.node_count() if hasattr(_s, 'node_count') else 0
+            except Exception:
+                pass
+
+            from omega.telemetry import _load as _telem_load
+            tdata = _telem_load()
+            session_total = tdata.get("sessions", {}).get("total", 0)
+
+            # Graduated urgency: more memories = more frequent nudge
+            show = False
+            if mem_count >= 1800:
+                show = True  # every session
+                print(f"  {mem_count:,}/2,000 memories -- approaching free tier limit")
+                print("  Search quality degrades at 2,000. Run 'omega upgrade' for unlimited.")
+            elif mem_count >= 1500:
+                show = session_total % 3 == 0  # every 3rd session
+                if show:
+                    print(f"  {mem_count:,}/2,000 memories (75%). Pro removes limits. Run 'omega upgrade'")
+            elif mem_count >= 1000:
+                show = session_total % 5 == 0  # every 5th session
+                if show:
+                    print(f"  {mem_count:,}/2,000 memories. Pro: unlimited + coordination + routing. Run 'omega upgrade'")
+            elif mem_count >= 500:
+                show = session_total % 10 == 0  # every 10th session
+                if show:
+                    print("  Pro: coordination, routing, and 96 more tools. Run 'omega upgrade'")
     except Exception:
         pass
 
@@ -413,23 +410,20 @@ def _capture_usage_to_supabase(session_id: str, project_dir: str):
             if not session_id.startswith("agent-"):
                 return
 
-        # Load Supabase credentials
+        # Load Supabase credentials from env vars or ~/.omega/secrets.json
         sb_url = os.environ.get("SUPABASE_URL", "")
         sb_key = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")
         if not sb_url or not sb_key:
-            env_file = Path.home() / "Projects" / "omega" / "website" / ".env.local"
-            if env_file.exists():
-                for line in env_file.read_text().splitlines():
-                    line = line.strip()
-                    if not line or line.startswith("#") or "=" not in line:
-                        continue
-                    k, _, v = line.partition("=")
-                    k = k.strip()
-                    v = v.strip().strip('"').strip("'")
-                    if k == "SUPABASE_URL" and not sb_url:
-                        sb_url = v
-                    elif k == "SUPABASE_SERVICE_ROLE_KEY" and not sb_key:
-                        sb_key = v
+            secrets_file = Path.home() / ".omega" / "secrets.json"
+            if secrets_file.exists():
+                try:
+                    secrets_data = json.loads(secrets_file.read_text())
+                    if not sb_url:
+                        sb_url = secrets_data.get("SUPABASE_URL", secrets_data.get("supabase_url", ""))
+                    if not sb_key:
+                        sb_key = secrets_data.get("SUPABASE_SERVICE_ROLE_KEY", secrets_data.get("supabase_key", ""))
+                except (json.JSONDecodeError, OSError):
+                    pass
         if not sb_url or not sb_key:
             return
 
@@ -442,20 +436,15 @@ def _capture_usage_to_supabase(session_id: str, project_dir: str):
         for model_id, stats in model_usage.items():
             cost = stats.get("costUSD", 0)
             if cost:
-                # Readable name preserving version: "claude-opus-4-6" -> "Opus 4.6"
+                # Clean up model ID for display
                 short_name = model_id
-                lower = model_id.lower()
-                if "opus" in lower:
-                    ver = lower.split("opus-")[-1].split("-")[0] if "opus-" in lower else ""
-                    short_name = f"Opus {ver}" if ver else "Opus"
-                elif "sonnet" in lower:
-                    ver = lower.split("sonnet-")[-1].split("-")[0] if "sonnet-" in lower else ""
-                    short_name = f"Sonnet {ver}" if ver else "Sonnet"
-                elif "haiku" in lower:
-                    ver = lower.split("haiku-")[-1].split("-")[0] if "haiku-" in lower else ""
-                    short_name = f"Haiku {ver}" if ver else "Haiku"
-                # Accumulate cost if same short name appears (e.g. from multiple sub-versions)
-                cost_by_model[short_name] = round(cost_by_model.get(short_name, 0) + cost, 6)
+                if "opus" in model_id.lower():
+                    short_name = "Claude Opus"
+                elif "sonnet" in model_id.lower():
+                    short_name = "Claude Sonnet"
+                elif "haiku" in model_id.lower():
+                    short_name = "Claude Haiku"
+                cost_by_model[short_name] = round(cost, 6)
 
         # Compute session timestamps from duration
         duration_ms = project_entry.get("lastDuration", 0)
@@ -529,7 +518,68 @@ def _capture_usage_to_supabase(session_id: str, project_dir: str):
         _log_hook_error("capture_usage_supabase", e)
 
 
+def _build_project_status(session_id: str, project: str):
+    """Build a project status snapshot from session activity.
+
+    Returns structured text or None if insufficient data.
+    """
+    if not project:
+        return None
+    try:
+        from omega.bridge import query_structured
+    except ImportError:
+        return None
+
+    decisions = query_structured(
+        query_text="decisions made",
+        limit=5,
+        session_id=session_id,
+        project=project,
+        event_type="decision",
+    )
+    tasks = query_structured(
+        query_text="completed tasks",
+        limit=5,
+        session_id=session_id,
+        project=project,
+        event_type="task_completion",
+    )
+
+    if not decisions and not tasks:
+        return None  # Not enough activity for a status snapshot
+
+    parts = [f"Project: {Path(project).name}"]
+    if decisions:
+        items = [m.get("content", "")[:150] for m in decisions[:3]]
+        parts.append("Key decisions: " + "; ".join(items))
+    if tasks:
+        items = [m.get("content", "")[:150] for m in tasks[:3]]
+        parts.append("Completed: " + "; ".join(items))
+
+    return " | ".join(parts)[:600]
+
+
 def main():
+    # Bridge: try the in-process daemon handler first for zero-drift parity
+    # with the hook_server. Falls through to the legacy logic below if the
+    # bridge module is unavailable (core-only install) or the handler raises.
+    try:
+        try:
+            from ._fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler
+        except Exception:
+            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+            from _fallback_bridge import build_payload_from_env, emit_result, try_daemon_handler  # type: ignore
+        payload = build_payload_from_env()
+        result = try_daemon_handler(
+            "omega_platform.server.hook_server.session",
+            "handle_session_stop",
+            payload,
+        )
+        if result is not None:
+            emit_result(result)  # calls sys.exit, never returns
+    except Exception:
+        pass  # bridge layer itself broke; fall through to legacy logic
+    # --- legacy fallback below (unchanged) ---
     session_id = os.environ.get("SESSION_ID", "")
     project = os.environ.get("PROJECT_DIR", os.getcwd())
 
@@ -548,7 +598,7 @@ def main():
     # Cloud push fallback — when the hook_server is down (OOM), this fast_hook
     # path is the only session_stop that fires. Push to cloud here too.
     try:
-        from omega.cloud.sync import get_sync
+        from omega_platform.cloud.sync import get_sync
         get_sync().sync_all()
         push_marker = Path.home() / ".omega" / "last-cloud-push"
         push_marker.write_text(datetime.now(timezone.utc).isoformat())
@@ -568,12 +618,30 @@ def main():
             metadata={"source": "session_stop_hook", "project": project},
             session_id=session_id,
             project=project,
+            ttl_override=3600,  # Match hook server TTL — don't accumulate
         )
     except ImportError:
         pass
     except Exception as e:
         _log_hook_error("session_stop", e)
         print(f"OMEGA session_stop failed: {e}", file=sys.stderr)
+
+    # Auto-generate project_status (will evolve existing if present)
+    project_status_text = _build_project_status(session_id, project)
+    if project_status_text:
+        try:
+            from omega.bridge import auto_capture as _ac
+            _ac(
+                content=project_status_text,
+                event_type="project_status",
+                session_id=session_id,
+                project=project,
+                metadata={"source": "session_stop_auto", "project": project},
+            )
+        except ImportError:
+            pass
+        except Exception as e:
+            _log_hook_error("session_stop_project_status", e)
 
 
 def _log_timing(hook_name, elapsed_ms):
