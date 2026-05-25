@@ -47,17 +47,26 @@ from omega.server import handlers as _handlers_module
 TOOL_SCHEMAS = list(_CORE_SCHEMAS)
 HANDLERS = dict(_CORE_HANDLERS)
 
-# Built-in optional modules (coordination, router, profile, knowledge, entity)
-# These require a Pro license. In the open-core distribution, they are gated
-# behind license.is_pro(). Try each in turn; missing modules are fine.
+# Built-in optional modules (coordination, router, profile, knowledge, entity,
+# oracle, typed memory, audit, federation, dreaming, stores, ingest).
+# These require a Pro license and live in the `omega_platform` namespace
+# distributed as the paid wheel via omegamax.co (Supabase). In the open-core
+# distribution they are gated behind license.is_pro(); the imports below fail
+# cleanly (caught by `except ImportError: pass`) when omega_platform is not
+# installed, so free PyPI users see zero pro behavior.
 _BUILTIN_MODULES = [
-    ("omega_platform.server.coord_schemas", "COORD_TOOL_SCHEMAS", "omega.server.coord_handlers", "COORD_HANDLERS"),
-    ("omega.router.tool_schemas", "ROUTER_TOOL_SCHEMAS", "omega.router.handlers", "ROUTER_HANDLERS"),
-    ("omega.profile.tool_schemas", "PROFILE_TOOL_SCHEMAS", "omega.profile.handlers", "PROFILE_HANDLERS"),
-    ("omega.knowledge.tool_schemas", "KNOWLEDGE_TOOL_SCHEMAS", "omega.knowledge.handlers", "KNOWLEDGE_HANDLERS"),
-    ("omega.entity.tool_schemas", "ENTITY_TOOL_SCHEMAS", "omega.entity.handlers", "ENTITY_HANDLERS"),
-    ("omega.oracle.tool_schemas", "ORACLE_TOOL_SCHEMAS", "omega.oracle.handlers", "ORACLE_HANDLERS"),
-    # SayDo removed — archived module, 0 usage, was adding 6 dead tool schemas per turn
+    ("omega_platform.server.coord_schemas", "COORD_TOOL_SCHEMAS", "omega_platform.server.coord_handlers", "COORD_HANDLERS"),
+    ("omega_platform.router.tool_schemas", "ROUTER_TOOL_SCHEMAS", "omega_platform.router.handlers", "ROUTER_HANDLERS"),
+    ("omega_platform.profile.tool_schemas", "PROFILE_TOOL_SCHEMAS", "omega_platform.profile.handlers", "PROFILE_HANDLERS"),
+    ("omega_platform.knowledge.tool_schemas", "KNOWLEDGE_TOOL_SCHEMAS", "omega_platform.knowledge.handlers", "KNOWLEDGE_HANDLERS"),
+    ("omega_platform.entity.tool_schemas", "ENTITY_TOOL_SCHEMAS", "omega_platform.entity.handlers", "ENTITY_HANDLERS"),
+    ("omega_platform.oracle.tool_schemas", "ORACLE_TOOL_SCHEMAS", "omega_platform.oracle.handlers", "ORACLE_HANDLERS"),
+    ("omega_platform.ingest.tool_schemas", "INGEST_TOOL_SCHEMAS", "omega_platform.ingest.handlers", "INGEST_HANDLERS"),
+    ("omega_platform.stores.tool_schemas", "STORES_TOOL_SCHEMAS", "omega_platform.stores.handlers", "STORES_HANDLERS"),
+    ("omega_platform.dreaming.tool_schemas", "DREAMING_TOOL_SCHEMAS", "omega_platform.dreaming.handlers", "DREAMING_HANDLERS"),
+    ("omega_platform.audit.tool_schemas", "AUDIT_TOOL_SCHEMAS", "omega_platform.audit.handlers", "AUDIT_HANDLERS"),
+    ("omega_platform.federation.tool_schemas", "FEDERATION_TOOL_SCHEMAS", "omega_platform.federation.handlers", "FEDERATION_HANDLERS"),
+    ("omega_platform.typed.tool_schemas", "TYPED_TOOL_SCHEMAS", "omega_platform.typed.handlers", "TYPED_HANDLERS"),
 ]
 
 import importlib
