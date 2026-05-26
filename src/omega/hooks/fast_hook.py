@@ -501,63 +501,64 @@ def main():
     if _SLOW_HOOKS.intersection(hook_names):
         timeout = 20.0
 
-    # Fast-path: if socket is stale (daemon exited without cleanup),
-    # remove it immediately and skip to fallback — no retries needed.
-    if SOCK_PATH and _is_socket_stale(SOCK_PATH):
-        result = None
-    else:
-        # Try daemon connection with retries (handles startup race where
-        # SessionStart hook fires before MCP server opens the socket).
-        # On first FileNotFoundError / ConnectionRefusedError, try to
-        # auto-spawn the standalone hook daemon (omega_platform fallback
-        # executor) — one shot per fast_hook invocation, no infinite loops.
-        result = None
-        auto_start_tried = False
-        for attempt in range(_CONNECT_RETRIES + 1):
-            try:
-                result = delegate(hook_names if is_batch else hook_names[0], payload, timeout=timeout)
-                break
-            except socket.timeout:
-                break  # Daemon exists but slow — don't retry, fall through
-            except (FileNotFoundError, ConnectionRefusedError) as exc:
-                if not auto_start_tried:
-                    auto_start_tried = True
-                    started = False
+    # If the socket is stale, unlink it (handled inside _is_socket_stale)
+    # and fall through to the retry loop — its FileNotFoundError handler
+    # will trigger _auto_start_hook_daemon().  Don't bypass.
+    if SOCK_PATH:
+        _is_socket_stale(SOCK_PATH)  # may unlink; return value ignored
+
+    # Try daemon connection with retries (handles startup race where
+    # SessionStart hook fires before MCP server opens the socket).
+    # On first FileNotFoundError / ConnectionRefusedError, try to
+    # auto-spawn the standalone hook daemon (omega_platform fallback
+    # executor) — one shot per fast_hook invocation, no infinite loops.
+    result = None
+    auto_start_tried = False
+    for attempt in range(_CONNECT_RETRIES + 1):
+        try:
+            result = delegate(hook_names if is_batch else hook_names[0], payload, timeout=timeout)
+            break
+        except socket.timeout:
+            break  # Daemon exists but slow — don't retry, fall through
+        except (FileNotFoundError, ConnectionRefusedError) as exc:
+            if not auto_start_tried:
+                auto_start_tried = True
+                started = False
+                try:
+                    from ._fallback_bridge import _auto_start_hook_daemon
+                    started = _auto_start_hook_daemon()
+                except Exception:
+                    # Standalone (repo-root) install — bridge sits as a sibling.
                     try:
-                        from ._fallback_bridge import _auto_start_hook_daemon
+                        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+                        from _fallback_bridge import _auto_start_hook_daemon  # type: ignore
                         started = _auto_start_hook_daemon()
                     except Exception:
-                        # Standalone (repo-root) install — bridge sits as a sibling.
-                        try:
-                            sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-                            from _fallback_bridge import _auto_start_hook_daemon  # type: ignore
-                            started = _auto_start_hook_daemon()
-                        except Exception:
-                            started = False
-                    _log_timing(
-                        "+".join(hook_names),
-                        0.0,
-                        "auto_start_ok" if started else "auto_start_fail",
-                    )
-                    if started:
-                        # Retry the connect exactly once after spawn.
-                        try:
-                            result = delegate(
-                                hook_names if is_batch else hook_names[0],
-                                payload,
-                                timeout=timeout,
-                            )
-                            break
-                        except Exception:
-                            pass
-                    # Either auto-start failed or the retry connect failed.
-                    # Fall through to the legacy fallback bridge path.
-                    break
-                # Already tried auto-start once — give up on this exception path.
+                        started = False
+                _log_timing(
+                    "+".join(hook_names),
+                    0.0,
+                    "auto_start_ok" if started else "auto_start_fail",
+                )
+                if started:
+                    # Retry the connect exactly once after spawn.
+                    try:
+                        result = delegate(
+                            hook_names if is_batch else hook_names[0],
+                            payload,
+                            timeout=timeout,
+                        )
+                        break
+                    except Exception:
+                        pass
+                # Either auto-start failed or the retry connect failed.
+                # Fall through to the legacy fallback bridge path.
                 break
-            except OSError:
-                if attempt < _CONNECT_RETRIES:
-                    time.sleep(_CONNECT_RETRY_DELAY)
+            # Already tried auto-start once — give up on this exception path.
+            break
+        except OSError:
+            if attempt < _CONNECT_RETRIES:
+                time.sleep(_CONNECT_RETRY_DELAY)
 
     elapsed_ms = (time.monotonic() - t0) * 1000
 

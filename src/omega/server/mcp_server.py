@@ -137,7 +137,7 @@ _SQLITE_EXECUTOR = ThreadPoolExecutor(
 # Override with OMEGA_RSS_LIMIT_MB env var. HTTP daemon serves 8-10 concurrent Claude
 # Code sessions; 2 GB is normal operating load. Self-killing at 2 GB is worse than
 # running hot — it breaks ALL connected sessions simultaneously.
-_RSS_LIMIT_DEFAULT = "8192" if _TRANSPORT == "http" else "1024"
+_RSS_LIMIT_DEFAULT = "8192" if _TRANSPORT == "http" else "4096"
 _RSS_LIMIT_BYTES = int(os.environ.get("OMEGA_RSS_LIMIT_MB", _RSS_LIMIT_DEFAULT)) * 1024 * 1024
 
 # Idle watchdog: exit after this many seconds without a tool call.
