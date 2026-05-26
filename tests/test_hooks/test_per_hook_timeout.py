@@ -31,7 +31,7 @@ def test_override_returns_custom_budget():
     """Known heavy hooks return their configured budget, not the default."""
     from omega_platform.server.hook_server import core
 
-    assert core._timeout_for("session_stop") == 10.0
+    assert core._timeout_for("session_stop") == 4.5
     assert core._timeout_for("session_start") == 10.0
     assert core._timeout_for("surface_memories") == 8.0
     assert core._timeout_for("auto_capture") == 6.0
@@ -47,7 +47,7 @@ def test_env_var_override_merges_without_clobbering_defaults(monkeypatch):
     try:
         assert core._timeout_for("my_hook") == 2.5
         # Built-in defaults survive the merge.
-        assert core._timeout_for("session_stop") == 10.0
+        assert core._timeout_for("session_stop") == 4.5
         assert core._timeout_for("pre_push_guard") == core.HANDLER_TIMEOUT
     finally:
         monkeypatch.delenv("OMEGA_HOOK_TIMEOUTS_JSON", raising=False)
@@ -63,7 +63,7 @@ def test_env_var_override_ignores_malformed_json(monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="omega.hook_server"):
         importlib.reload(core)
     try:
-        assert core._timeout_for("session_stop") == 10.0
+        assert core._timeout_for("session_stop") == 4.5
         assert any("OMEGA_HOOK_TIMEOUTS_JSON" in m for m in caplog.messages)
     finally:
         monkeypatch.delenv("OMEGA_HOOK_TIMEOUTS_JSON", raising=False)
@@ -126,10 +126,10 @@ async def _drive_connection(hook_name: str) -> tuple[dict, float]:
 
 @pytest.mark.slow
 async def test_handle_connection_honours_per_hook_timeout(monkeypatch):
-    """A slow handler completes under the 10s session_stop budget but trips the 4s default."""
+    """A slow handler completes under the 8s surface_memories budget but trips the 4s default."""
     from omega_platform.server.hook_server import core
 
-    sleep_seconds = 5.0  # > default 4.0 but < session_stop 10.0
+    sleep_seconds = 5.0  # > default 4.0 but < surface_memories 8.0
 
     def _slow_handler(_request):
         # Runs in the ThreadPoolExecutor — block, don't await.
@@ -138,14 +138,14 @@ async def test_handle_connection_honours_per_hook_timeout(monkeypatch):
 
     # Register the same blocking handler for both hook names so the only
     # variable is the per-hook timeout budget.
-    monkeypatch.setitem(core.HOOK_HANDLERS, "session_stop", _slow_handler)
+    monkeypatch.setitem(core.HOOK_HANDLERS, "surface_memories", _slow_handler)
     monkeypatch.setitem(core.HOOK_HANDLERS, "pre_push_guard", _slow_handler)
 
-    # session_stop has a 10s budget → completes.
-    response, elapsed = await _drive_connection("session_stop")
+    # surface_memories has an 8s budget → completes.
+    response, elapsed = await _drive_connection("surface_memories")
     assert response.get("output") == "ok", f"expected success, got {response!r}"
     assert response.get("error") == "", f"expected no error, got {response!r}"
-    assert elapsed < 9.0, f"expected ~{sleep_seconds}s, got {elapsed:.2f}s"
+    assert elapsed < 7.0, f"expected ~{sleep_seconds}s, got {elapsed:.2f}s"
     assert elapsed >= sleep_seconds - 0.2
 
     # pre_push_guard inherits the 4s default → times out before the handler returns.

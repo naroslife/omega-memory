@@ -268,10 +268,53 @@ def resolve_hook_socket_path() -> Path:
     return _LEGACY_SOCK
 
 
-def sweep_stale_sockets(max_age_days: int = 2) -> int:
-    """Remove ``~/.omega/hook-*.sock`` files older than ``max_age_days`` (default 2).
+def _parse_claude_sock_name(name: str) -> tuple[int, int] | None:
+    """Parse ``hook-claude-<pid>-<starttime>.sock`` into ``(pid, starttime)``.
 
-    Returns count removed. Safe to call from any context; swallows errors.
+    Returns None for any name that doesn't match that exact form (project,
+    session, and legacy sockets fall through to the mtime cutoff instead).
+    """
+    if not name.startswith("hook-claude-") or not name.endswith(".sock"):
+        return None
+    core = name[len("hook-claude-") : -len(".sock")]
+    parts = core.rsplit("-", 1)
+    if len(parts) != 2:
+        return None
+    try:
+        return int(parts[0]), int(parts[1])
+    except ValueError:
+        return None
+
+
+def _daemon_owner_dead(pid: int, starttime: int) -> bool:
+    """Return True only when the Claude ancestor that owns a socket is provably gone.
+
+    Fail-open: when ``/proc`` is unavailable, or the process is alive but its
+    starttime can't be read, we return False (keep the socket) rather than
+    risk unlinking a live daemon's socket. Returns True only when ``/proc``
+    confirms the PID is absent, or the running PID's starttime no longer
+    matches (PID recycling).
+    """
+    if not Path("/proc").is_dir():
+        return False
+    if not Path(f"/proc/{pid}").exists():
+        return True  # process is provably gone
+    cur = _read_starttime(pid)
+    if cur == 0:
+        return False  # alive but stat unreadable — keep (fail-open)
+    return cur != starttime  # recycled PID → original owner is gone
+
+
+def sweep_stale_sockets(max_age_days: int = 2) -> int:
+    """Remove stale ``~/.omega/hook-*.sock`` files. Returns count removed.
+
+    For ``hook-claude-<pid>-<starttime>.sock`` sockets we remove based on
+    daemon liveness (encoded ancestor PID is gone or recycled) — this reaps
+    orphaned-instance sockets promptly instead of waiting ``max_age_days``.
+    All other socket names (project/session/legacy) use the mtime cutoff.
+
+    File hygiene only — does NOT terminate any daemon process. Safe to call
+    from any context; swallows errors.
     """
     import time
 
@@ -280,6 +323,13 @@ def sweep_stale_sockets(max_age_days: int = 2) -> int:
     try:
         for p in _OMEGA_DIR.glob("hook-*.sock"):
             try:
+                parsed = _parse_claude_sock_name(p.name)
+                if parsed is not None:
+                    pid, starttime = parsed
+                    if _daemon_owner_dead(pid, starttime):
+                        p.unlink()
+                        removed += 1
+                    continue
                 if p.stat().st_mtime < cutoff:
                     p.unlink()
                     removed += 1
