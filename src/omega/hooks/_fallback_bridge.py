@@ -245,6 +245,28 @@ def _is_hook_daemon_alive(pid_path: Path) -> bool:
         return False
 
 
+def _pid_alive(pid: int) -> bool:
+    """Return True if the process with this PID is alive (or unknown — fail-open).
+
+    Unlike :func:`_is_hook_daemon_alive`, ``PermissionError`` is treated as alive
+    because the process exists (owned by another user). Callers using this helper
+    to invalidate stale on-disk markers want the safer fail-open interpretation:
+    only suppress when we are certain the recorded PID is gone.
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)  # signal 0: no-op probe; raises if process gone
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        # Process exists but owned by someone else — count it as alive.
+        return True
+    except OSError:
+        return False
+
+
 def _probe_hook_socket(sock_path: Path) -> bool:
     """Best-effort non-blocking connect probe. Returns True if a listener responds."""
     if sys.platform == "win32" or not sock_path.exists():

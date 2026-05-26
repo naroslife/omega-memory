@@ -398,8 +398,30 @@ def _check_daemon_health_marker():
             return
         now = datetime.now(timezone.utc)
         age = (now - ts).total_seconds()
-        if 0 <= age <= _DEGRADED_BANNER_WINDOW_SEC:
-            _emit_daemon_down_notice("<degraded>")
+        if not (0 <= age <= _DEGRADED_BANNER_WINDOW_SEC):
+            return
+        # PID-staleness gate: if the marker records a PID and that PID is no
+        # longer running, suppress the banner. The daemon has died/restarted
+        # since the marker was written, so the recorded degradation is stale.
+        # Missing or non-int PID falls through to the existing freshness-only
+        # check (fail-open — we don't have enough info to invalidate).
+        marker_pid = data.get("pid")
+        if isinstance(marker_pid, int):
+            try:
+                from omega.hooks._fallback_bridge import _pid_alive
+            except ImportError:
+                _pid_alive = None  # type: ignore[assignment]
+            if _pid_alive is not None and not _pid_alive(marker_pid):
+                try:
+                    import logging
+                    logging.getLogger("omega.hooks.fast_hook").debug(
+                        "daemon-health marker PID %s is gone; suppressing banner",
+                        marker_pid,
+                    )
+                except Exception:
+                    pass
+                return
+        _emit_daemon_down_notice("<degraded>")
     except Exception:
         pass
 
