@@ -2349,6 +2349,59 @@ def cmd_embed_daemon(args):
         print("Usage: omega embed-daemon {start|stop|status}")
 
 
+def _probe_hook_socket(ok, fail, warn) -> None:
+    """Probe the hook daemon UNIX socket for liveness.
+
+    The config-presence check above only proves OMEGA is *registered* in
+    Claude Code; it tells us nothing about whether the hook daemon is
+    actually accepting connections. This helper resolves the per-instance
+    socket path and does a short non-blocking AF_UNIX connect, reporting
+    one of: OK (accepting), NOT FOUND (daemon down), or BOUND-but-stuck.
+
+    Pure status — never raises, never blocks longer than ~250ms.
+    """
+    import socket as _socket
+
+    try:
+        from omega.socket_path import resolve_hook_socket_path
+    except Exception as exc:  # pragma: no cover - defensive
+        warn(f"hook socket: cannot resolve path ({exc})")
+        return
+
+    try:
+        sock_path = resolve_hook_socket_path()
+    except Exception as exc:  # pragma: no cover - defensive
+        warn(f"hook socket: path resolution failed ({exc})")
+        return
+
+    path_str = str(sock_path)
+
+    if not sock_path.exists():
+        fail(f"hook socket: NOT FOUND ({path_str} — daemon may be down)")
+        return
+
+    s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+    try:
+        s.settimeout(0.25)
+        try:
+            s.connect(path_str)
+        except (ConnectionRefusedError, FileNotFoundError):
+            fail(f"hook socket: BOUND but not accepting ({path_str} — stale or stuck)")
+            return
+        except _socket.timeout:
+            fail(f"hook socket: timed out connecting ({path_str} — stuck)")
+            return
+        except OSError as exc:
+            fail(f"hook socket: connect failed ({path_str}: {exc})")
+            return
+        ok(f"hook socket: OK (accepting on {path_str})")
+    finally:
+        try:
+            s.close()
+        except Exception:
+            pass
+
+
 def cmd_doctor(args):
     """Verify OMEGA installation: import, model, database, MCP, hooks."""
     from omega.cli_ui import print_header, print_section, print_status_line, print_summary
@@ -2518,6 +2571,10 @@ def cmd_doctor(args):
             warn("Claude Code CLI not found (cannot verify MCP registration)")
         except Exception as e:
             warn(f"MCP check failed: {e}")
+
+        # Live hook-socket probe — config presence above does NOT prove the
+        # daemon is alive. Attempt a short non-blocking UNIX connect.
+        _probe_hook_socket(ok, fail, warn)
     else:
         if not use_json:
             print_section("MCP Server")
