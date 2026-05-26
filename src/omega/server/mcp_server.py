@@ -13,7 +13,6 @@ import asyncio
 import collections
 import logging
 import os
-import random
 import socket
 import signal
 import sys
@@ -134,11 +133,6 @@ _SQLITE_EXECUTOR = ThreadPoolExecutor(
     thread_name_prefix="omega-db",
 )
 
-# Dedicated executor for hook handlers — prevents hooks from starving behind
-# MCP tool calls that saturate _SQLITE_EXECUTOR. SQLite WAL mode handles
-# concurrent reader access safely across both executors.
-_HOOK_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="omega-hook")
-
 # RSS memory watchdog threshold (bytes). Default 1 GB for stdio, 4 GB for HTTP daemon.
 # Override with OMEGA_RSS_LIMIT_MB env var. HTTP daemon serves 8-10 concurrent Claude
 # Code sessions; 2 GB is normal operating load. Self-killing at 2 GB is worse than
@@ -183,7 +177,7 @@ def _close_on_exit():
     except Exception as e:
         logger.debug("Store close at exit failed: %s", e)
     # Shutdown background executors to release threads
-    for executor in (_SQLITE_EXECUTOR, _HOOK_EXECUTOR):
+    for executor in (_SQLITE_EXECUTOR,):
         try:
             executor.shutdown(wait=False)
         except Exception:
@@ -442,134 +436,6 @@ async def _idle_watchdog():
             logger.warning("Idle for %.0fs (limit %ds), shutting down.", idle, _IDLE_TIMEOUT)
             _close_on_exit()
             os._exit(0)
-
-
-async def _socket_watchdog():
-    """Re-create the hook socket if deleted or stale (unresponsive)."""
-    if sys.platform == "win32":
-        return  # TCP server doesn't need file watchdog
-
-    try:
-        from omega_platform.server.hook_server import SOCK_PATH, start_hook_server
-    except ImportError:
-        logger.warning("hook_server not available, socket watchdog disabled")
-        return
-
-    while True:
-        await asyncio.sleep(15)
-        if not SOCK_PATH:
-            continue
-        if not SOCK_PATH.exists():
-            logger.warning("Hook socket deleted, re-creating...")
-            await start_hook_server()
-        else:
-            # Validate socket is actually ours and responsive.
-            # A successful open_unix_connection is sufficient — the teardown
-            # can race with the server's writer.wait_closed() and raise
-            # ConnectionResetError (OSError), which is a false positive.
-            try:
-                r, w = await asyncio.wait_for(
-                    asyncio.open_unix_connection(path=str(SOCK_PATH)), timeout=2.0
-                )
-                # Socket is alive — close is best-effort, don't let teardown
-                # races trigger a false "unresponsive" recreation.
-                w.close()
-                try:
-                    await asyncio.wait_for(w.wait_closed(), timeout=1.0)
-                except (OSError, asyncio.TimeoutError):
-                    pass
-            except (OSError, asyncio.TimeoutError):
-                logger.warning("Hook socket unresponsive, re-creating...")
-                try:
-                    SOCK_PATH.unlink()
-                except OSError:
-                    pass
-                await start_hook_server()
-
-
-_coord_tick_count = 0
-
-
-def _run_coordination_tick():
-    """Sync helper for periodic coordination maintenance."""
-    global _coord_tick_count
-    _coord_tick_count += 1
-    try:
-        from omega_platform.orchestrator.coordination import get_manager
-        from omega_platform.server.hook_server import (
-            _last_deadlock_push,
-            DEADLOCK_PUSH_DEBOUNCE_S,
-            _agent_nickname,
-        )
-
-        mgr = get_manager()
-
-        # Stale cleanup — internally debounced to 5 min
-        try:
-            mgr._maybe_clean_stale()
-        except Exception as e:
-            logger.debug("Stale session cleanup failed: %s", e)
-
-        # Flush audit buffer on every tick (time-based fallback)
-        try:
-            mgr.flush_audit_buffer()
-        except Exception as e:
-            logger.debug("Audit buffer flush failed: %s", e)
-
-        # Every 5th tick (~5 min): deadlock detection + notification flush + stale pruning
-        if _coord_tick_count % 5 == 0:
-            # Prune stale debounce entries (>1h old) to prevent unbounded growth
-            try:
-                from omega_platform.server.hook_server import _debounce_state
-                evicted = _debounce_state.prune_stale(3600)
-                if evicted:
-                    logger.debug("Pruned %d stale debounce entries", evicted)
-            except Exception:
-                pass
-            # Flush batched notifications (high: 1h, medium: 3h cutoffs)
-            try:
-                flushed = mgr.flush_notification_batch()
-                if flushed:
-                    logger.debug("Flushed %d batched notifications", flushed)
-            except Exception as e:
-                logger.debug("Notification flush failed: %s", e)
-
-            try:
-                cycles = mgr.detect_deadlocks()
-                if cycles:
-                    now_dl = time.monotonic()
-                    for cycle in cycles[:2]:
-                        cycle_key = str(hash(tuple(sorted(cycle[:-1]))))
-                        if cycle_key not in _last_deadlock_push or now_dl - _last_deadlock_push[cycle_key] >= DEADLOCK_PUSH_DEBOUNCE_S:
-                            _last_deadlock_push[cycle_key] = now_dl
-                            cycle_str = " -> ".join(_agent_nickname(s) for s in cycle)
-                            for peer in set(cycle[:-1]):
-                                try:
-                                    mgr.send_message(
-                                        from_session=peer,
-                                        subject=f"[DEADLOCK] Circular wait: {cycle_str}",
-                                        to_session=peer,
-                                        msg_type="inform",
-                                        ttl_minutes=30,
-                                    )
-                                except Exception as e:
-                                    logger.debug("Deadlock broadcast failed: %s", e)
-            except Exception as e:
-                logger.debug("Deadlock detection failed: %s", e)
-    except Exception as e:
-        logger.debug("Coordination tick failed: %s", e)
-
-
-async def _coordination_loop():
-    """Periodic coordination maintenance — runs even during idle."""
-    loop = asyncio.get_running_loop()
-    while True:
-        # Jitter: 60-90s to desynchronize across processes
-        await asyncio.sleep(60 + random.uniform(0, 30))
-        try:
-            await loop.run_in_executor(_SQLITE_EXECUTOR, _run_coordination_tick)
-        except Exception as e:
-            logger.debug("Coordination loop tick failed: %s", e)
 
 
 def _configure_logging():
@@ -873,7 +739,7 @@ def _check_port_available(host: str, port: int) -> bool:
         return False
 
 
-async def _run_http_transport(hook_srv) -> None:
+async def _run_http_transport() -> None:
     """Run the MCP server as a Streamable HTTP daemon via uvicorn.
 
     Uses StreamableHTTPSessionManager to handle multiple concurrent
@@ -925,12 +791,6 @@ async def _run_http_transport(hook_srv) -> None:
 
     import contextlib
 
-    try:
-        from omega_platform.server.hook_server import stop_hook_server as _stop_hook_srv
-    except ImportError:
-        async def _stop_hook_srv(*args, **kwargs):
-            pass
-
     @contextlib.asynccontextmanager
     async def lifespan(app):
         async with session_manager.run():
@@ -939,7 +799,6 @@ async def _run_http_transport(hook_srv) -> None:
                 _HTTP_HOST, _HTTP_PORT,
             )
             yield
-        await _stop_hook_srv(hook_srv)
 
     app = Starlette(
         routes=[
@@ -1007,8 +866,8 @@ async def main():
         os.environ.setdefault("OMEGA_CROSS_ENCODER", "0")
     # Cap asyncio's default executor — prevents unbounded thread growth from
     # run_in_executor(None, ...) calls (was reaching 49-64 threads at crash).
-    # Note: hooks use _HOOK_EXECUTOR (see hook_server/core.py) to prevent
-    # starvation behind MCP tool calls. Only MCP tools use _SQLITE_EXECUTOR.
+    # Hook execution now lives in the standalone omega_platform.server.hook_daemon
+    # process; the MCP server only handles MCP tool calls via _SQLITE_EXECUTOR.
     loop = asyncio.get_running_loop()
     loop.set_default_executor(ThreadPoolExecutor(max_workers=2, thread_name_prefix="omega-default"))
 
@@ -1039,17 +898,6 @@ async def main():
         )
     except Exception:
         pass
-
-    # Start UDS hook server for fast hook dispatch
-    try:
-        from omega_platform.server.hook_server import start_hook_server, stop_hook_server
-    except ImportError:
-        async def start_hook_server(*args, **kwargs):
-            return None
-        async def stop_hook_server(*args, **kwargs):
-            pass
-
-    hook_srv = await start_hook_server()
 
     # Prewarm embedding: try shared daemon first, fall back to in-process ONNX.
     # Daemon eliminates per-process model duplication (~170MB each).
@@ -1112,27 +960,18 @@ async def main():
     if _IDLE_TIMEOUT > 0 and _TRANSPORT != "http":
         _watchdog_task = asyncio.create_task(_idle_watchdog())
 
-    # Socket watchdog — re-creates hook.sock if deleted by another session's stop
-    _sock_watchdog_task = asyncio.create_task(_socket_watchdog())
-
-    # Background coordination loop — stale cleanup + deadlock detection even during idle
-    _coord_loop_task = asyncio.create_task(_coordination_loop())
-
     # RSS memory watchdog — graceful exit before memory pressure causes SIGSEGV
     _rss_watchdog_task = asyncio.create_task(_rss_watchdog())
 
     if _TRANSPORT == "http":
-        await _run_http_transport(hook_srv)
+        await _run_http_transport()
     else:
-        try:
-            async with stdio_server() as (read_stream, write_stream):
-                await server.run(
-                    read_stream,
-                    write_stream,
-                    server.create_initialization_options(),
-                )
-        finally:
-            await stop_hook_server(hook_srv)
+        async with stdio_server() as (read_stream, write_stream):
+            await server.run(
+                read_stream,
+                write_stream,
+                server.create_initialization_options(),
+            )
 
 
 if __name__ == "__main__":
