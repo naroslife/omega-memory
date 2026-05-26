@@ -194,6 +194,7 @@ def _inject_settings_hooks(hooks_src: Path):
     configured = 0
     skipped = 0
     repaired = 0
+    migrated = 0
 
     for event, hook_defs in manifest.items():
         # Normalize: old format is a single dict, new format is a list of dicts
@@ -208,22 +209,28 @@ def _inject_settings_hooks(hooks_src: Path):
             # Strip .py and use the full script string for matching
             script_key = script.replace(".py", "").replace(" ", "_")
 
-            # Check if this OMEGA hook is already wired (match by script_key in command)
+            # Cross-event lookup: scan ALL events for an existing wiring of this
+            # script_key so a hook moved between events (e.g. session_stop from
+            # Stop -> SessionEnd) gets migrated rather than duplicated.
+            found_event = None
             existing_idx = None
             existing_hook_idx = None
-            if event in settings["hooks"]:
-                for i, entry in enumerate(settings["hooks"][event]):
+            for cand_event, cand_entries in settings["hooks"].items():
+                for i, entry in enumerate(cand_entries):
                     for j, h in enumerate(entry.get("hooks", [])):
                         cmd = h.get("command", "")
                         if script_key in cmd.replace(".py", "").replace(" ", "_"):
+                            found_event = cand_event
                             existing_idx = i
                             existing_hook_idx = j
                             break
                     if existing_idx is not None:
                         break
+                if existing_idx is not None:
+                    break
 
-            if existing_idx is not None:
-                # Hook exists — check if the path is correct
+            if found_event is not None and found_event == event:
+                # Hook exists in the manifest-specified event — check the path
                 existing_cmd = settings["hooks"][event][existing_idx]["hooks"][existing_hook_idx]["command"]
                 if existing_cmd == command:
                     skipped += 1
@@ -233,7 +240,37 @@ def _inject_settings_hooks(hooks_src: Path):
                 repaired += 1
                 continue
 
-            # Build the hook entry
+            if found_event is not None and found_event != event:
+                # Hook is wired to a DIFFERENT event — migrate it to the
+                # manifest-specified event. Remove the inner hook entry; if its
+                # containing entry["hooks"] becomes empty, drop that entry too.
+                src_entries = settings["hooks"][found_event]
+                src_entry = src_entries[existing_idx]
+                src_entry["hooks"].pop(existing_hook_idx)
+                if not src_entry["hooks"]:
+                    src_entries.pop(existing_idx)
+                # Note: we deliberately leave settings["hooks"][found_event] as
+                # a (possibly empty) list — don't remove the key, preserves
+                # the user's structure.
+
+                # Build the migrated entry under the manifest-specified event.
+                entry = {
+                    "hooks": [
+                        {
+                            "command": command,
+                            "timeout": hook_def["timeout"],
+                            "type": "command",
+                        }
+                    ],
+                    "matcher": hook_def.get("matcher", ""),
+                }
+                if event not in settings["hooks"]:
+                    settings["hooks"][event] = []
+                settings["hooks"][event].append(entry)
+                migrated += 1
+                continue
+
+            # Not found anywhere — append to the manifest-specified event.
             entry = {
                 "hooks": [
                     {
@@ -254,11 +291,13 @@ def _inject_settings_hooks(hooks_src: Path):
 
     if configured > 0:
         print(f"  settings.json: {configured} hook(s) configured")
+    if migrated > 0:
+        print(f"  settings.json: {migrated} hook(s) migrated (event moved)")
     if repaired > 0:
         print(f"  settings.json: {repaired} hook(s) repaired (paths updated)")
     if skipped > 0:
         print(f"  settings.json: {skipped} hook(s) already configured")
-    if configured == 0 and skipped == 0:
+    if configured == 0 and skipped == 0 and migrated == 0 and repaired == 0:
         print("  settings.json: hooks configured")
 
 
