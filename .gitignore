@@ -46,6 +46,9 @@ Thumbs.db
 # Local agent state — worktrees, local settings (CLAUDE.md is tracked)
 .claude/
 
+# Track CLAUDE.md in THIS repo despite the machine-wide ~/.gitignore_global rule
+!CLAUDE.md
+
 # Installer packages
 *.pkg
 docs/submissions/
