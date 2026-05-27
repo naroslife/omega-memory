@@ -43,10 +43,12 @@ Thumbs.db
 !.env*.example
 .mcpregistry*
 
-# Project-local agent instructions (contains internal references)
-CLAUDE.md
+# Local agent state — worktrees, local settings (CLAUDE.md is tracked)
 .claude/
 
 # Installer packages
 *.pkg
 docs/submissions/
+
+# Caliber local state
+.caliber/
