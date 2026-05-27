@@ -470,7 +470,7 @@ class TestInjectSettingsHooks:
         assert "already configured" in out
 
     def test_hook_command_includes_python_path(self):
-        """Hook commands should reference the resolved python path."""
+        """Hook commands should reference the resolved python path in module form."""
         self.settings_json.parent.mkdir(parents=True, exist_ok=True)
         self.settings_json.write_text("{}")
         _inject_settings_hooks(self.hooks_src)
@@ -478,7 +478,9 @@ class TestInjectSettingsHooks:
         hook_entry = settings["hooks"]["SessionStart"][0]
         command = hook_entry["hooks"][0]["command"]
         assert command.startswith("/usr/bin/python3")
-        assert "session_start.py" in command
+        # Portable module form (works for global-wheel installs), not a file path.
+        assert "-m omega.hooks.session_start" in command
+        assert ".py" not in command
 
     def test_hook_entry_structure(self):
         """Each hook entry should have the correct structure."""

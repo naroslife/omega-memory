@@ -203,7 +203,15 @@ def _inject_settings_hooks(hooks_src: Path):
 
         for hook_def in hook_defs:
             script = hook_def["script"]
-            command = f"{python_path} {hooks_src / script}"
+            # Emit the portable Python module form so the command works for any
+            # install (global wheel OR editable checkout) without depending on an
+            # on-disk source-file path. ``script`` is "fast_hook.py <event...>"; the
+            # filename maps to a module under omega.hooks and the trailing tokens are
+            # the event args passed through verbatim (incl. "+"-joined multi-hooks).
+            script_parts = script.split()
+            module = "omega.hooks." + Path(script_parts[0]).stem
+            event_args = script_parts[1:]
+            command = " ".join([python_path, "-m", module, *event_args])
 
             # Build a unique identifier for this hook (handles "fast_hook.py session_start" etc.)
             # Strip .py and use the full script string for matching
@@ -774,11 +782,16 @@ def cmd_hooks(args):
                                 parts = cmd.split()
                                 if len(parts) >= 2:
                                     py_path = parts[0]
-                                    script_path = parts[1]
                                     if not Path(py_path).exists():
                                         broken_paths.append(f"{event}: Python not found: {py_path}")
-                                    if not Path(script_path).exists():
-                                        broken_paths.append(f"{event}: Script not found: {script_path}")
+                                    # Module form ("python -m omega.hooks.fast_hook <event>")
+                                    # has no on-disk script path to validate. Only the
+                                    # legacy file-path form ("python /path/fast_hook.py")
+                                    # carries a checkable script path in parts[1].
+                                    if parts[1] != "-m":
+                                        script_path = parts[1]
+                                        if not Path(script_path).exists():
+                                            broken_paths.append(f"{event}: Script not found: {script_path}")
 
                 print(f"  settings:   {events_with_omega} OMEGA hook events configured")
                 if broken_paths:

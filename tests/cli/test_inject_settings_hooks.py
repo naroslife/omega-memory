@@ -48,10 +48,16 @@ def _hooks_dir(tmp_path: Path) -> Path:
 
 
 def _build_hook_entry(python_path: str, hooks_src: Path, script: str, timeout: int, matcher: str = "") -> dict:
+    # Mirror cli._inject_settings_hooks: emit the portable Python module form
+    # ("python -m omega.hooks.fast_hook <event>") rather than a file path so the
+    # command works for global-wheel installs without an on-disk script path.
+    parts = script.split()
+    module = "omega.hooks." + Path(parts[0]).stem
+    command = " ".join([python_path, "-m", module, *parts[1:]])
     return {
         "hooks": [
             {
-                "command": f"{python_path} {hooks_src / script}",
+                "command": command,
                 "timeout": timeout,
                 "type": "command",
             }
