@@ -2560,7 +2560,9 @@ def cmd_doctor(args):
         if not use_json:
             print_section("MCP Server (Claude Code)")
         try:
-            result = subprocess.run(["claude", "mcp", "list"], capture_output=True, text=True, timeout=5)
+            result = subprocess.run(
+                ["claude", "mcp", "list"], capture_output=True, text=True, timeout=15
+            )
             if "omega-memory" in result.stdout:
                 ok("omega-memory registered in Claude Code")
             else:

@@ -1,9 +1,0 @@
-{
-  "mcpServers": {
-    "omega-memory": {
-      "command": "python3.11",
-      "args": ["-m", "omega.server.mcp_server"],
-      "env": {}
-    }
-  }
-}
