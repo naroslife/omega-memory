@@ -31,7 +31,7 @@ def test_override_returns_custom_budget():
     """Known heavy hooks return their configured budget, not the default."""
     from omega_platform.server.hook_server import core
 
-    assert core._timeout_for("session_stop") == 4.5
+    assert core._timeout_for("session_stop") == 11.0
     assert core._timeout_for("session_start") == 10.0
     assert core._timeout_for("surface_memories") == 8.0
     assert core._timeout_for("auto_capture") == 6.0
@@ -47,7 +47,7 @@ def test_env_var_override_merges_without_clobbering_defaults(monkeypatch):
     try:
         assert core._timeout_for("my_hook") == 2.5
         # Built-in defaults survive the merge.
-        assert core._timeout_for("session_stop") == 4.5
+        assert core._timeout_for("session_stop") == 11.0
         assert core._timeout_for("pre_push_guard") == core.HANDLER_TIMEOUT
     finally:
         monkeypatch.delenv("OMEGA_HOOK_TIMEOUTS_JSON", raising=False)
@@ -63,7 +63,7 @@ def test_env_var_override_ignores_malformed_json(monkeypatch, caplog):
     with caplog.at_level("WARNING", logger="omega.hook_server"):
         importlib.reload(core)
     try:
-        assert core._timeout_for("session_stop") == 4.5
+        assert core._timeout_for("session_stop") == 11.0
         assert any("OMEGA_HOOK_TIMEOUTS_JSON" in m for m in caplog.messages)
     finally:
         monkeypatch.delenv("OMEGA_HOOK_TIMEOUTS_JSON", raising=False)
