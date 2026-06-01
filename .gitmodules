@@ -1,3 +1,6 @@
 [submodule "src/omega_platform"]
 	path = src/omega_platform
 	url = git@github.com:naroslife/omega-platform.git
+[submodule "migration"]
+	path = migration
+	url = git@github.com:naroslife/migration.git
